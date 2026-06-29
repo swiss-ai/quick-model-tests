@@ -57,7 +57,9 @@ echo "Running quick-model-tests..."
 # Default to the capability report (the --detail view). Pass --test-framework
 # through ARGS to run the pytest pass/fail gate instead (CI gating).
 set +e
-quick-model-tests --detail "${ARGS[@]}"
+# `${ARGS[@]+...}` guards against the macOS bash 3.2 "unbound variable" error
+# when ARGS is empty under `set -u`.
+quick-model-tests --detail ${ARGS[@]+"${ARGS[@]}"}
 status=$?
 set -e
 exit "$status"

@@ -12,8 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run
 Scope to specific areas and pick a model:
 
 ```bash
-curl -fsSL .../run.sh | bash -s -- --suite tools,streaming \
-  --model swiss-ai/Apertus-8B-Instruct-2509
+curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run.sh | bash -s -- --model swiss-ai/Apertus-8B-Instruct-2509
 ```
 
 Every check is **deterministic** (status codes, response schema, token counts,
