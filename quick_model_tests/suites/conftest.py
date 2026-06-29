@@ -1,8 +1,10 @@
 """Shared pytest fixtures + marker registration.
 
-Lives *inside* the package (not at the repo root) so it ships with the wheel and
-is discovered when the suite is pip-installed and run via `quick-model-tests` from an
-arbitrary cwd (the curl|bash flow), not only from a source checkout.
+Lives in the *suites* directory (next to the test modules) so pytest always
+loads it as the tests' conftest -- independent of where the rootdir lands. That
+matters for the installed `quick-model-tests` / curl|bash flow: a conftest one
+level up (the package root) is NOT loaded when the rootdir is the suites dir,
+which surfaced as "fixture 'client' not found".
 
 All assertions in this suite are deterministic (see SPEC.md section 6); there is
 deliberately no LLM-as-judge. Semantic/quality evaluation belongs in LLM evals,
