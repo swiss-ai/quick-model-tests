@@ -41,15 +41,23 @@ def _check_name(nodeid: str) -> str:
 
 
 def _crash_message(report) -> str:
-    lr = getattr(report, "longrepr", None)
-    crash = getattr(lr, "reprcrash", None)
-    msg = (
-        crash.message
-        if crash is not None and getattr(crash, "message", None)
-        else str(lr or "")
-    )
-    lines = [ln for ln in msg.strip().splitlines() if ln.strip()]
-    return (lines[0] if lines else "")[:160]
+    text = getattr(report, "longreprtext", "") or ""
+    if not text:
+        lr = getattr(report, "longrepr", None)
+        crash = getattr(lr, "reprcrash", None)
+        text = (
+            crash.message
+            if crash is not None and getattr(crash, "message", None)
+            else str(lr or "")
+        )
+    # pytest prefixes error/assertion lines with "E"; the FIRST is the headline
+    # (e.g. "AssertionError: ..." or "ApiError: HTTP ..."); later ones are the
+    # "+ where ..." assertion-rewrite detail.
+    e_lines = [ln[1:].strip() for ln in text.splitlines() if ln[:2] in ("E ", "E\t")]
+    if e_lines:
+        return e_lines[0][:200]
+    nonempty = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return (nonempty[-1] if nonempty else "")[:200]
 
 
 def _skip_reason(report) -> str:

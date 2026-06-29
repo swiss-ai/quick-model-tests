@@ -47,7 +47,10 @@ echo "Setting up test environment..."
 . "$VENV/bin/activate"
 pip install --quiet --upgrade pip
 
-if [ "$LOCAL" -eq 1 ] || [ -f "./pyproject.toml" ]; then
+# Install from git by default. Only use the local tree with an explicit --local
+# (otherwise a stray ./pyproject.toml in the CWD -- e.g. another project -- would
+# get installed instead of quick-model-tests).
+if [ "$LOCAL" -eq 1 ]; then
   pip install --quiet -e ".[dev]"
 else
   pip install --quiet "quick_model_tests @ git+${REPO}@${REF}"
