@@ -20,34 +20,31 @@ substring / regex / closed-set membership) — there is intentionally no
 LLM-as-judge. Semantic/quality evaluation belongs in LLM evals, not in a
 functional pass/fail gate.
 
-## Two modes
+## Usage
 
-`quick-model-tests` defaults to a **capability report** (a quick diagnostic). The
-**pass/fail gate** (pytest) is opt-in via `--test-framework` — and that's what
-`run.sh` / CI use.
+One command. It runs the deterministic suites against a model and prints a
+**✔/✗ capability table**, exiting non-zero on any failure.
 
 ```bash
-quick-model-tests                                 # capability report, default model
+quick-model-tests                              # run ALL checks, default model
 quick-model-tests --model swiss-ai/Apertus-1.5-8B-Instruct-sft-dpo-tools
-quick-model-tests --model A --model B             # comparison table (capabilities x models)
-quick-model-tests --json                          # machine-readable report
-
-quick-model-tests --test-framework                # run the pass/fail suite (CI gate)
-quick-model-tests --test-framework --suite tools  # scope the gate to a suite
+quick-model-tests --capability tools           # just one capability
+quick-model-tests --model A --model B          # compare models (table)
+quick-model-tests --model A --model B --detail # + per-model failure reasons
+quick-model-tests --json                       # machine-readable
 ```
 
-Report status per row: `yes` works · `no` absent / server rejected the feature ·
-`broken` offered but misbehaves (server bug) · `error` the probe couldn't run
-(auth/connection). The gate *fails loudly* on broken paths; the report inventories
-them.
+Status per check: `✔` pass · `✗` an assertion failed (a real gap) · `⚠` the
+check errored (e.g. the server returned an HTTP error) · `–` skipped. The
+capabilities are: `core` · `streaming` · `tools` · `multimodal` · `multiturn` ·
+`reasoning` · `robustness` (· `perf`, opt-in).
 
 Local development:
 
 ```bash
 uv venv && source .venv/bin/activate   # or python -m venv .venv && source .venv/bin/activate
 make install                      # editable install (auto-detects `uv pip` / `pip`)
-make run MODEL=Qwen/Qwen3.5-27B   # capability report
-make test-framework SUITE=core    # the pass/fail gate
+make run MODEL=Qwen/Qwen3.5-27B   # run the checks
 make format                       # ruff auto-fix + format
 make check                        # ruff lint + format check (the CI PR gate)
 ```

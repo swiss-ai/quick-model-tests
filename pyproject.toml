@@ -11,10 +11,11 @@ license = { file = "LICENSE" }
 classifiers = ["License :: OSI Approved :: Apache Software License"]
 dependencies = [
     "requests",
+    "pytest",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["ruff"]
 # Heavy, opt-in: only needed for the future `--serve` (local vLLM) mode.
 serve = ["vllm"]
 

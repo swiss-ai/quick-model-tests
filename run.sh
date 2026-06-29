@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Bootstrap + run quick-model-tests against a hosted API.
 #
-# By default this prints the capability report (the human-readable view). Pass
-# --test-framework to run the pytest pass/fail gate instead (for CI gating).
+# Runs the deterministic suites and prints a ✔/✗ capability table (exit non-zero
+# on failure). Scope with --capability TYPE; compare models with repeated --model.
 #
 # Remote (the common case):
 #   export CSCS_SERVING_API=...   # bearer token
@@ -50,16 +50,16 @@ pip install --quiet --upgrade pip
 if [ "$LOCAL" -eq 1 ] || [ -f "./pyproject.toml" ]; then
   pip install --quiet -e ".[dev]"
 else
-  pip install --quiet "quick_model_tests[dev] @ git+${REPO}@${REF}"
+  pip install --quiet "quick_model_tests @ git+${REPO}@${REF}"
 fi
 
 echo "Running quick-model-tests..."
-# Default to the capability report (the --detail view). Pass --test-framework
-# through ARGS to run the pytest pass/fail gate instead (CI gating).
+# Runs all capability checks by default. Pass --capability TYPE / --model
+# through ARGS to scope or compare.
 set +e
 # `${ARGS[@]+...}` guards against the macOS bash 3.2 "unbound variable" error
 # when ARGS is empty under `set -u`.
-quick-model-tests --detail ${ARGS[@]+"${ARGS[@]}"}
+quick-model-tests ${ARGS[@]+"${ARGS[@]}"}
 status=$?
 set -e
 exit "$status"

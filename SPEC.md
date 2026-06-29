@@ -299,10 +299,12 @@ sections 7.4 / 7.6 with the real formats:
    when an assistant `tool_calls` turn is echoed back ("can only concatenate str
    (not dict) to str" — server chat-template bug). See §7.3; `tools-loop` is
    `xfail` and `tools-parallel` skips until these are fixed server-side.
-4. **Capability matrix per model.** ADDRESSED: `capabilities.py` + the
-   `quick-model-tests --capabilities [--json]` flag probe a model live and print a
-   per-capability report (`yes`/`no`/`broken`/`error`). It is a diagnostic, NOT
-   a gate — the suites themselves hard-fail on broken paths (no silent skips).
+4. **Capability matrix per model.** ADDRESSED: capabilities and tests are one
+   thing. `quick-model-tests` runs the suites and renders a `✔/✗/⚠` table
+   (`capabilities.py`), exiting non-zero on failure. Scope with `--capability
+   TYPE`, compare with repeated `--model`, machine-read with `--json`. Status is
+   derived from the pytest outcome: pass / fail (assertion) / broken (errored) /
+   skip.
    Findings (2026-06): the `-tools` build does chat/streaming/tools/named-choice/
    tool-streaming but lacks parallel calls and breaks the multi-turn loop; the
    non-`-tools` build returns 400 `requires --tool-call-parser to be set` for any

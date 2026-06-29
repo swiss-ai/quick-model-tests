@@ -55,4 +55,4 @@ jobs:
           if [ -z "$CSCS_SERVING_API" ]; then
             echo "no endpoint secret configured; skipping live suite"; exit 0
           fi
-          quick-model-tests --suite core --junit junit.xml
+          quick-model-tests --capability core --junit junit.xml

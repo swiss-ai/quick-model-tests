@@ -1,28 +1,22 @@
-.PHONY: install install-dev run report test-framework format check lint test collect
+.PHONY: install install-dev run format check lint collect test
 
-# Optional overrides:  make test-framework MODEL=Qwen/Qwen3.5-27B SUITE=tools
+# Optional overrides:  make run MODEL=Qwen/Qwen3.5-27B CAPABILITY=tools
 MODEL ?=
-SUITE ?=
+CAPABILITY ?=
 _MODEL = $(if $(MODEL),--model $(MODEL),)
-_SUITE = $(if $(SUITE),--suite $(SUITE),)
+_CAP = $(if $(CAPABILITY),--capability $(CAPABILITY),)
 
 # Prefer uv when available (uv-created venvs have no `pip`); fall back to pip.
 PIP := $(shell command -v uv >/dev/null 2>&1 && echo "uv pip" || echo "pip")
 
-install:        ## editable install with dev tools (pytest, ruff)
+install:        ## editable install with dev tools (ruff)
 	$(PIP) install -e ".[dev]"
 
 install-dev: install
 
-# Default mode: capability report (pass several MODEL= for a comparison table).
+# Run the capability checks (the ✔/✗ table).
 run:
-	quick-model-tests $(_MODEL)
-
-report: run
-
-# Pass/fail CI gate: the pytest suite.
-test-framework:
-	quick-model-tests --test-framework $(_SUITE) $(_MODEL)
+	quick-model-tests $(_MODEL) $(_CAP)
 
 # Auto-fix lint + format the tree.
 format:
