@@ -122,6 +122,34 @@ class ChatClient:
             raise ApiError(resp.status_code, "endpoint returned no prompt_logprobs")
         return [int(next(iter(e))) if e else None for e in pl[:n]]
 
+    def tokenize(self, prompt: str, add_special_tokens: bool = True) -> list:
+        """Token ids for ``prompt`` via the ``/tokenize`` endpoint."""
+        resp = requests.post(
+            f"{self.config.api_base}/tokenize",
+            headers=self._headers(),
+            json={
+                "model": self.config.model,
+                "prompt": prompt,
+                "add_special_tokens": add_special_tokens,
+            },
+            timeout=self.config.timeout,
+        )
+        if not resp.ok:
+            raise ApiError(resp.status_code, resp.text)
+        return resp.json()["tokens"]
+
+    def detokenize(self, tokens: list) -> str:
+        """Text for ``tokens`` via the ``/detokenize`` endpoint."""
+        resp = requests.post(
+            f"{self.config.api_base}/detokenize",
+            headers=self._headers(),
+            json={"model": self.config.model, "tokens": tokens},
+            timeout=self.config.timeout,
+        )
+        if not resp.ok:
+            raise ApiError(resp.status_code, resp.text)
+        return resp.json()["prompt"]
+
     # -- convenience helpers used by suites ---------------------------------
 
     @staticmethod
