@@ -17,8 +17,6 @@ import json
 
 import pytest
 
-from quick_model_tests.client import ChatClient
-
 pytestmark = pytest.mark.streaming
 
 # Thinking-safe budget: a reasoning model streams a stripped `<think>` block
@@ -78,13 +76,40 @@ def test_stream_finish(client):
 
 
 def test_stream_stop(client):
-    """stream-stop: a streamed response honors the stop sequence."""
-    text = ChatClient.stream_text(
-        client.stream(
-            [{"role": "user", "content": "Count: one two three four five"}],
-            stop=["three"],
-            max_tokens=_THINKING_MAX_TOKENS,
-        )
+    """stream-stop: a streamed response honors the stop sequence, across BOTH
+    output channels.
+
+    Mirrors core-stop for the streaming path: a reasoning model can hit the stop
+    string while still inside its `<think>` block, so the partial output arrives
+    as `reasoning_content` deltas (or, on an endpoint that drops that channel, not
+    at all) rather than `content`. Assert the stop string leaked into NEITHER
+    streamed channel, and that the stop took effect -- some streamed output, or a
+    `finish_reason` of 'stop'.
+    """
+    content_parts, reasoning_parts, finish = [], [], None
+    for ch in client.stream(
+        [{"role": "user", "content": "Count: one two three four five"}],
+        stop=["three"],
+        max_tokens=_THINKING_MAX_TOKENS,
+    ):
+        # The terminal chunk carries usage with an empty `choices` list.
+        for choice in ch.get("choices") or []:
+            delta = choice.get("delta", {})
+            if delta.get("content"):
+                content_parts.append(delta["content"])
+            if delta.get("reasoning_content"):
+                reasoning_parts.append(delta["reasoning_content"])
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+    content = "".join(content_parts)
+    reasoning = "".join(reasoning_parts)
+    assert "three" not in content, (
+        f"stop string leaked into streamed content: {content!r}"
     )
-    assert text.strip(), "empty streamed content"
-    assert "three" not in text, f"stop string leaked into stream: {text!r}"
+    assert "three" not in reasoning, (
+        f"stop string leaked into streamed reasoning_content: {reasoning!r}"
+    )
+    assert content.strip() or reasoning.strip() or finish == "stop", (
+        f"no streamed output in either channel and "
+        f"finish_reason={finish!r} (expected 'stop')"
+    )

@@ -73,15 +73,31 @@ def test_core_maxtokens(client):
 
 
 def test_core_stop(client):
-    """core-stop: a stop sequence is not present in the output."""
+    """core-stop: a stop sequence is honored, across BOTH output channels.
+
+    The stop string is matched against the raw generation, so a reasoning model
+    can hit it while still inside its `<think>` block -- the partial output then
+    lands in `reasoning_content` (or, on an endpoint that drops that channel,
+    nowhere visible) rather than `content`. Checking only `content` would mistake
+    that for an empty response. So: assert the stop string leaked into NEITHER
+    channel, and that the stop actually took effect -- either some output came
+    back, or `finish_reason` reports the stop.
+    """
     resp = client.chat(
         [{"role": "user", "content": "Count: one two three four five"}],
         stop=["three"],
         max_tokens=_THINKING_MAX_TOKENS,
     )
-    content = ChatClient.content(resp)
-    assert content and content.strip(), "empty assistant content"
-    assert "three" not in content, f"stop string leaked: {content!r}"
+    content = ChatClient.content(resp) or ""
+    reasoning = ChatClient.reasoning_content(resp) or ""
+    finish = resp["choices"][0]["finish_reason"]
+    assert "three" not in content, f"stop string leaked into content: {content!r}"
+    assert (
+        "three" not in reasoning
+    ), f"stop string leaked into reasoning_content: {reasoning!r}"
+    assert (
+        content.strip() or reasoning.strip() or finish == "stop"
+    ), f"no output in either channel and finish_reason={finish!r} (expected 'stop')"
 
 
 def test_core_usage(client):
