@@ -19,6 +19,15 @@ pytestmark = pytest.mark.core
 # degeneration (apertus-program #420, raised by the SML eval team on vLLM 0.19).
 _APERTUS_BOS_ID = 1
 
+# Thinking-safe budget. A reasoning model (e.g. Qwen3.5) spends tokens on a
+# `<think>` block that the server's reasoning parser strips out of `content`
+# before the answer is emitted; on an endpoint that does not surface
+# `reasoning_content`, a tight max_tokens truncates mid-thought and leaves
+# `content` empty (looks like a model failure, but is just budget). Checks that
+# assert post-thinking content use this; checks that deliberately probe a tight
+# budget (core-maxtokens, core-usage) keep their own small value. See SPEC.md 7.6.
+_THINKING_MAX_TOKENS = 1024
+
 
 def test_core_health(client):
     """core-health: a basic completion returns non-empty content + usage."""
@@ -44,7 +53,7 @@ def test_core_system(client):
             },
             {"role": "user", "content": "Give me a primary color."},
         ],
-        max_tokens=20,
+        max_tokens=_THINKING_MAX_TOKENS,
     )
     content = (ChatClient.content(resp) or "").strip().lower().rstrip(".")
     assert len(content.split()) <= 2, f"expected ~one word, got: {content!r}"
@@ -67,7 +76,7 @@ def test_core_stop(client):
     resp = client.chat(
         [{"role": "user", "content": "Count: one two three four five"}],
         stop=["three"],
-        max_tokens=50,
+        max_tokens=_THINKING_MAX_TOKENS,
     )
     content = ChatClient.content(resp)
     assert content and content.strip(), "empty assistant content"

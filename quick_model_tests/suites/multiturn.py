@@ -16,6 +16,11 @@ pytestmark = pytest.mark.multiturn
 
 SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?(?:think|inner_prefix|inner_suffix)\b")
 
+# Thinking-safe budget: a reasoning model burns tokens on a stripped `<think>`
+# block before the answer, so a tight max_tokens truncates mid-thought and
+# returns empty `content`. See core.py / SPEC.md 7.6.
+_THINKING_MAX_TOKENS = 1024
+
 
 def test_mt_context(client):
     """mt-context: a sentinel stated in turn 1 is recalled in a later turn."""
@@ -29,7 +34,9 @@ def test_mt_context(client):
             "content": "What code did I give you? Reply with only the number.",
         },
     ]
-    content = (ChatClient.content(client.chat(messages, max_tokens=32)) or "").strip()
+    content = (
+        ChatClient.content(client.chat(messages, max_tokens=_THINKING_MAX_TOKENS)) or ""
+    ).strip()
     assert "4827" in content, f"sentinel from turn 1 not recalled: {content!r}"
 
 
@@ -48,7 +55,9 @@ def test_mt_roles(client):
             "content": "Now, in one short sentence, what game are we playing?",
         },
     ]
-    content = (ChatClient.content(client.chat(messages, max_tokens=64)) or "").strip()
+    content = (
+        ChatClient.content(client.chat(messages, max_tokens=_THINKING_MAX_TOKENS)) or ""
+    ).strip()
     assert content, "empty assistant content"
     leak = SPECIAL_TOKEN_RE.search(content)
     assert not leak, f"special-token leak in multi-turn content: {content!r}"

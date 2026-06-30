@@ -21,6 +21,11 @@ from quick_model_tests.client import ChatClient
 
 pytestmark = pytest.mark.streaming
 
+# Thinking-safe budget: a reasoning model streams a stripped `<think>` block
+# before any `content` delta, so a tight max_tokens yields an empty concatenated
+# stream. See core.py / SPEC.md 7.6.
+_THINKING_MAX_TOKENS = 1024
+
 
 def test_stream_basic(client):
     """stream-basic: >=2 SSE chunks, non-empty content, clean termination.
@@ -32,7 +37,7 @@ def test_stream_basic(client):
         client._payload(
             [{"role": "user", "content": "Count from one to five."}],
             stream=True,
-            max_tokens=64,
+            max_tokens=_THINKING_MAX_TOKENS,
         ),
         stream=True,
     )
@@ -78,7 +83,7 @@ def test_stream_stop(client):
         client.stream(
             [{"role": "user", "content": "Count: one two three four five"}],
             stop=["three"],
-            max_tokens=64,
+            max_tokens=_THINKING_MAX_TOKENS,
         )
     )
     assert text.strip(), "empty streamed content"
