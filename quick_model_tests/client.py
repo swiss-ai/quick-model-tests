@@ -100,6 +100,15 @@ class ChatClient:
         return response["choices"][0]["message"].get("content")
 
     @staticmethod
+    def reasoning_content(response: dict) -> Optional[str]:
+        """The separate reasoning channel a reasoning-parser populates, or None.
+
+        vLLM/SGLang surface chain-of-thought in `message.reasoning_content`,
+        distinct from the user-facing `content`. None means the endpoint did not
+        split out a reasoning channel (a plain model, or the field was dropped)."""
+        return response["choices"][0]["message"].get("reasoning_content")
+
+    @staticmethod
     def stream_text(chunks) -> str:
         out = []
         for ch in chunks:

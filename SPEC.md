@@ -244,16 +244,50 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | mt-tools | tool call mid-conversation returns sentinel; a later turn's content contains it |
 | mt-roles | alternating user/assistant history → 200, well-formed, no role bleed / special-token leak |
 
-### 7.6 `reasoning` — `<think>` / `<|inner_prefix|>` path
-> Apertus 1.5 maps `<think>`/`</think>` and `<|inner_prefix|>`/`<|inner_suffix|>`
-> to ids 32/33 (see tokenizer repo). Confirm how reasoning is surfaced:
-> separate field vs inline tags (section 9.2). No quality judging — only that
-> the path is structurally well-formed.
+### 7.6 `reasoning` — `<think>` / `<|inner_prefix|>` path (reasoning-parser proof)
+> Apertus 1.5 wraps chain-of-thought between `<|inner_prefix|>` … `<|inner_suffix|>`
+> (ids 32/33; `<think>`/`</think>` alias). The server-side **reasoning parser**
+> (vLLM `--reasoning-parser qwen3`, the SGLang equivalent) splits that raw stream
+> into two OpenAI-compatible channels: `message.reasoning_content` (the scratch
+> work) and `message.content` (the user-facing answer). These tests prove the
+> parser performs that split correctly — non-streaming, streaming, and in
+> cooperation with the tool parser. Surfacing RESOLVED (§9 q2): a separate
+> `reasoning_content` field, NOT inline `<think>` tags in `content`.
+>
+> **Launch requirement.** Two independent launch flags, one per side of the
+> round-trip:
+> - `--default-chat-template-kwargs.enable_thinking true` — sets the default for
+>   **Apertus 1.5's own `enable_thinking` chat-template kwarg** (the template
+>   branches on it to emit "Deliberation: enabled"). This is the Apertus-specific
+>   switch that actually makes the model deliberate; off → no thinking at all.
+> - `--reasoning-parser qwen3` — selects vLLM's reasoning-parser *implementation*
+>   that splits the generated stream into `reasoning_content` / `content`.
+>   "qwen3" is just vLLM's name for that boundary format; it is NOT
+>   Apertus-specific and has nothing to do with the `enable_thinking` kwarg.
+>
+> A reasoning-capable model served without the `enable_thinking` default emits no
+> `reasoning_content` — so a skip here can mean a missing launch flag, not a
+> model gap.
+>
+> The suite probes once (`reasoning_supported`). On an endpoint that surfaces no
+> `reasoning_content` channel (a plain instruct model, a missing launch flag, or
+> a gateway that drops the field) the parser-specific rows **skip with a clear
+> reason** — so a skip, not a red fail (§8). `reason-separation` and
+> `reason-answer` hold regardless of how thinking is surfaced and always run.
+> `reason-disabled` sends a per-request `chat_template_kwargs={"enable_thinking":
+> false}` to **override** that server default, exercising request-over-launch
+> precedence (and skips if the override is not honored).
+
 | ID | Test | Pass criteria |
 |----|------|---------------|
-| reason-produced | reasoning-eliciting prompt → a thinking segment exists where expected (separate field, or matched `<think>…</think>` per §9.2) |
-| reason-separation | final user-visible `content` contains NO raw `<think>` / `<|inner_*|>` tokens |
-| reason-answer | constrain the answer to a closed set/sentinel (e.g. "what is 6×7? reply with only the number") → exact match `42` |
+| reason-produced | non-stream: parser emits both channels | `message.reasoning_content` present and non-empty AND `content` non-empty — the parser split both ways and did not swallow the answer into the reasoning channel |
+| reason-separation | answer channel is clean | final `content` contains NO raw `<think>` / `<|inner_*|>` tokens |
+| reason-clean-channel | reasoning channel is clean | `reasoning_content` itself contains NO raw `<|inner_prefix|>` / `<|inner_suffix|>` / `<think>` delimiters — the parser CONSUMED the boundary tokens, not merely relocated them |
+| reason-answer | answer survives the split | closed-set prompt ("what is 6×7? reply with only the number") → exact `42` in `content` |
+| reason-stream | streaming boundary is correct | for `stream=True`: every `delta.reasoning_content` chunk precedes the first `delta.content` chunk; the reasoning→answer transition happens exactly once (no flip-back); reassembled `content` carries the answer sentinel; no raw tokens leak in either streamed field |
+| reason-stream-equiv | stream split == non-stream split | streamed (`reasoning_content`, `content`) concatenations equal the non-stream `message.{reasoning_content, content}` for the same temp=0 prompt. **Deferred** — depends on temp=0 determinism (§9 q5); tracks the companion non-streaming reasoning-split issue |
+| reason-tools | reasoning- + tool-parser cooperation | reasoning prompt + one tool offered (forced) → the call lands in `tool_calls` with JSON-parseable `arguments`; neither `content` nor `reasoning_content` contains raw tool JSON / `<|tools_prefix|>` scaffolding. Skipped unless BOTH reasoning and tools are supported |
+| reason-disabled | parser respects the think toggle | `chat_template_kwargs={"enable_thinking": false}` → `reasoning_content` absent/empty AND answer still correct. Skipped if the endpoint ignores the kwarg (keeps thinking) |
 
 ### 7.7 `robustness` — chat-template injection surface
 | ID | Test | Pass criteria |
@@ -287,10 +321,22 @@ sections 7.4 / 7.6 with the real formats:
    numeric sentinel from an image and transcribes a wav clip. See §7.4.
 2. **Reasoning surfacing.** RESOLVED (2026-06): thinking is returned in a
    separate `reasoning_content` field (vLLM `--reasoning-parser qwen3`), NOT
-   inline `<think>` tags in `content`. Caveat: the swissai gateway was *dropping*
-   that field (Pydantic `extra="ignore"`); fixed in serving-api. The `reasoning`
-   suite therefore checks only what holds regardless of surfacing: the answer is
-   correct (closed-set) and no raw think tokens leak into `content`.
+   inline `<think>` tags in `content`. **Launch config (two distinct flags):**
+   `--default-chat-template-kwargs.enable_thinking true` sets the default for
+   *Apertus 1.5's own* `enable_thinking` chat-template kwarg (the Apertus switch
+   that makes the model deliberate); `--reasoning-parser qwen3` selects vLLM's
+   stream-splitting parser (a generic implementation name, NOT Apertus- or
+   qwen-model-specific). Without the `enable_thinking` default the template emits
+   no thinking, so no reasoning is produced regardless of the parser.
+   Caveat: the swissai gateway was *dropping* that field (Pydantic
+   `extra="ignore"`); fixed in serving-api. Now that the
+   field is surfaced, §7.6 asserts the **reasoning parser's split directly**:
+   both channels populated (reason-produced), each channel free of raw boundary
+   tokens (reason-separation / reason-clean-channel), the streaming reasoning→
+   answer boundary monotonic (reason-stream), and reasoning- + tool-parser
+   cooperation (reason-tools) — all gated behind the `reasoning_supported` probe
+   so they skip (not fail) on endpoints that surface no `reasoning_content`.
+   reason-separation and reason-answer hold regardless of surfacing.
 3. **Tool schema specifics.** RESOLVED (2026-06, `-sft-dpo-tools` build):
    OAI `tools`/`tool_calls` shape confirmed; `tool_choice: "required"` and named
    `{"function":{"name":...}}` both honored; streaming emits arg deltas (final
@@ -320,17 +366,21 @@ sections 7.4 / 7.6 with the real formats:
 1. **M0 skeleton** ✅ — `pyproject`, `client.py`, `config.py`, `conftest.py`,
    `run.sh`, and `core` suite. `curl | bash` runs end-to-end and exits correctly.
 2. **M1 streaming + tools** ✅ — implemented (stream-equiv deferred per §9.5).
-3. **M2 multiturn + reasoning** ✅ — implemented (mt-tools / reason-produced
-   deferred; see suite docstrings).
+3. **M2 multiturn + reasoning** ✅ — implemented. Reasoning expanded to prove the
+   parser split (reason-produced / -clean-channel / -stream / -tools / -disabled),
+   gated by the `reasoning_supported` probe; reason-stream-equiv deferred (mt-tools
+   covered by tools-multiturn). See suite docstrings.
 4. **M3 multimodal** ✅ — implemented with fixture assets in `assets/`.
 5. **M4 robustness** ✅ — injection/error paths implemented.
 6. **M5 perf + CI** — CI (lint + collect + live gate) ✅; the optional `perf`
    suite is still a stub.
 
-Every suite is now implemented (31 tests, no stubs). Deferred items, each noted
-in its suite docstring: `stream-equiv` (needs determinism, §9.5), `core-determinism`,
-`mt-tools` (covered by `tools-multiturn`), `reason-produced` (surfacing-dependent),
-and the optional `perf` suite.
+Every suite is now implemented (no stubs). Deferred items, each noted in its
+suite docstring: `stream-equiv` and `reason-stream-equiv` (need determinism,
+§9.5), `core-determinism`, `mt-tools` (covered by `tools-multiturn`), and the
+optional `perf` suite. The reasoning parser-split rows (`reason-produced`,
+`reason-clean-channel`, `reason-stream`, `reason-tools`, `reason-disabled`) are
+implemented and gated behind the `reasoning_supported` probe.
 
 ## 11. Conventions for adding a test
 
@@ -374,3 +424,11 @@ Design notes for the implementer:
 - Open considerations: GPU availability/detection, vLLM install (heavy, make it
   an opt-in extra `pip install ".[serve]"`), port selection, multi-GPU flags,
   and how to pass a chat template / tokenizer to vLLM if not bundled.
+- **Launch flags to match production.** For the `tools` and `reasoning` suites to
+  exercise their paths (not just skip), the local `vllm serve` must mirror the
+  deployment flags: `--tool-call-parser <name>` for tools; and for reasoning BOTH
+  `--default-chat-template-kwargs.enable_thinking true` (turns on Apertus 1.5's
+  own `enable_thinking` chat-template kwarg — the Apertus-specific switch) AND
+  `--reasoning-parser qwen3` (vLLM's generic stream-splitter, not Apertus-specific).
+  Miss the `enable_thinking` default and the template emits no thinking, so the
+  whole `reasoning` suite skips.
