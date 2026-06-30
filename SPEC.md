@@ -170,7 +170,7 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | core-maxtokens | `max_tokens` honored | `max_tokens=16` | `completion_tokens` ≤ limit (+1); `finish_reason` ∈ {length, stop} |
 | core-stop | `stop` honored | `stop=["three"]` | output contains no stop string |
 | core-usage | Usage accounting | any | `total == prompt + completion`, all > 0 |
-| core-no-double-bos | No double-BOS on the `/completions` path (the OpenWebUI path) | `<s>`-prefixed prompt via `/completions` `prompt_logprobs` | first non-null prompt-token position is NOT a 2nd BOS — i.e. a chat-templated prompt (which hardcodes `<s>`) doesn't get `<s><s>…` → degeneration (apertus-program #420). Apertus-specific; skips other models / when `prompt_logprobs` absent. `echo` is unreliable here (it strips the BOS); `prompt_logprobs` is gateway-friendly, `/tokenize` often isn't proxied. |
+| core-no-double-bos | No double-BOS on the `/completions` path (the OpenWebUI path) | discover the model's BOS via `/tokenize` (add_special True vs False) + `/detokenize`, then send a BOS-prefixed prompt via `/completions` `prompt_logprobs` | **Model-agnostic.** first non-null prompt-token position is NOT a 2nd BOS — i.e. a chat-templated prompt (which hardcodes the BOS) doesn't get `<bos><bos>…` → degeneration (apertus-program #420). Skips when the model has no BOS (e.g. Qwen) or when `/tokenize`/`prompt_logprobs` aren't proxied. |
 | core-determinism | temp=0 stability | same req ×2 | byte-identical outputs (relax only if §9.5 proves the endpoint is nondeterministic) |
 
 ### 7.2 `streaming`
