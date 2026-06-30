@@ -195,13 +195,16 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 >
 > Per "fail loudly, no silent skips": broken paths are red failures (non-zero
 > exit), not skips or xfails — so a CI/`run.sh` caller gates on them. Against the
-> `-tools` build today, tools-single/choice/stream/none pass and
-> tools-parallel/loop/leak fail; against `Qwen/Qwen3.5-27B` all pass.
+> `-tools` build (2026-06-30): tools-single/choice/stream/none/multiturn/followup
+> pass and tools-parallel/leak fail; against `Qwen/Qwen3.5-27B` all pass.
+> (tools-multiturn now passes — the `str + dict` chat-template bug is fixed in the
+> served template; see tokenizer repo PR #9.)
 
 | ID | Test | Pass criteria |
 |----|------|---------------|
 | tools-single | one tool offered, prompt forces use → `tool_calls[0].function.name` == expected; `arguments` is JSON-parseable and matches the declared schema (required keys present) |
-| tools-multiturn | multi-turn tool round-trip: call → append `tool` result message carrying sentinel `4827` → final `content` contains `"4827"`. **Fails on the `-tools` build** — it 400s with `"can only concatenate str (not dict) to str"` the moment an assistant `tool_calls` turn is echoed back (independent of the tool reply); a server-side chat-template bug. Passes on Qwen. |
+| tools-multiturn | multi-turn tool round-trip: call → append `tool` result message carrying sentinel `4827` → final `content` contains `"4827"`. **Now passes on the `-tools` build** (2026-06-30): the `"can only concatenate str (not dict) to str"` chat-template bug — which used to 400 the moment an assistant `tool_calls` turn was echoed back — is fixed in the served template (tokenizer repo PR #9). Passes on Qwen. |
+| tools-followup | a SECOND call after a completed round-trip: replay assistant `tool_calls` (Zurich) → `tool` result → assistant answer, then a new user turn asks for a different city → a FRESH `get_weather` call for that city (closed-set sentinel: London). Distinct from tools-multiturn (which stops at the first answer); doubles as a regression for the dict-args replay 400. **Passes on the `-tools` build** (2026-06). |
 | tools-parallel | prompt needing 2 calls → ≥2 entries in `tool_calls`. **Fails on the `-tools` build** (a 2-target prompt yields a single call; parallel unsupported). Passes on Qwen. |
 | tools-leak | agentic system prompt + a `bash` tool, action request → a structured `tool_calls` entry with **no tool scaffolding leaking into `content`** (no bare tool name, no `<info>`/`<bash>`/`<\|...\|>`/`<think>` markup — SPEC line 148-149). **Fails on the `-tools` build** — it returns `content="bash"` beside the call (and under opencode's protocol leaks `<info>…</info>` with empty `tool_calls`, so agents execute nothing). Passes on Qwen (`content=null`). |
 | tools-choice | `tool_choice="required"` forces a call; a specific `{"function":{"name":...}}` forces that function (both confirmed) |

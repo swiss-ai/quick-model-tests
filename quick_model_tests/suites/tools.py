@@ -242,6 +242,55 @@ def test_tools_multiturn(client, tools_supported):
     assert "4827" in content, f"sentinel from tool result missing: {content!r}"
 
 
+def test_tools_followup(client, tools_supported):
+    """tools-followup: a SECOND tool call after a completed round-trip.
+
+    Replays a finished round-trip in the history -- assistant `tool_calls`
+    (Zurich) -> `tool` result -> assistant answer -- then a new user turn asks
+    for a different city. The model must emit a FRESH get_weather call for that
+    city (closed-set sentinel: London).
+
+    Doubles as a regression for the dict-args replay 400 ("can only concatenate
+    str (not dict) to str"): the prior assistant `tool_calls` turn is echoed back
+    here, which is exactly what tripped the server chat-template bug. Distinct
+    from tools-multiturn, which stops at the first round-trip's final answer.
+    """
+    messages = [
+        {"role": "user", "content": "What's the weather in Zurich? Use the tool."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Zurich"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "14C light rain"},
+        {
+            "role": "assistant",
+            "content": "The weather in Zurich is 14C with light rain.",
+        },
+        {"role": "user", "content": "Now what about London?"},
+    ]
+    resp = client.chat(messages, tools=[WEATHER_TOOL], max_tokens=256)
+    calls = _tool_calls(resp)
+    assert calls, (
+        "expected a follow-up tool call for London, got none; "
+        f"content={ChatClient.content(resp)!r}"
+    )
+    assert calls[0]["function"]["name"] == "get_weather", calls[0]["function"]["name"]
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert "london" in str(args.get("city", "")).lower(), (
+        f"follow-up call did not target London: {args!r}"
+    )
+
+
 # Agentic system prompt that triggers the Apertus-1.5 `-tools` leak: instead of a
 # structured tool call, the model emits `<info>...</info>` / `<bash>...</bash>`
 # tool intent as plain content with EMPTY tool_calls -- so agents (opencode etc.)
