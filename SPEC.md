@@ -307,6 +307,13 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 - Console: one `✔ <id>` / `✗ <id> — <reason>` line per test, grouped by suite,
   then a summary `N passed, M failed, K skipped`.
 - `--junit <path>` emits JUnit XML (pytest `--junitxml`).
+- `--record-responses <dir>` records every request + response to disk, one folder
+  per test: `<dir>/<test-name>/<model>_input.txt` and `<model>_output.txt`
+  (streamed bodies captured too; multiple calls per test appended). The model id
+  is in the filename, so a multi-model comparison writes each model's I/O side by
+  side per test — for eyeballing what a given model actually received/returned
+  (reasoning split, tool-call leak, double-BOS) instead of re-deriving it from
+  pass/fail. Passive: it never changes what is sent or asserted.
 - Exit `0` iff zero failures (skips are OK). Non-zero otherwise.
 - A capability/format not supported by the target model `pytest.skip(...)`s with
   a clear reason (e.g. `"model has no audio capability"`) so the omission is

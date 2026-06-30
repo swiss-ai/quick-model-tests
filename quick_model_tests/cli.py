@@ -44,6 +44,13 @@ def main(argv=None) -> int:
         action="store_true",
         help="in a multi-model comparison, list the failure reasons",
     )
+    p.add_argument(
+        "--record-responses",
+        metavar="DIR",
+        dest="record_dir",
+        help="record each test's request + response under "
+        "DIR/<test-name>/<model>_input.txt and _output.txt",
+    )
     args = p.parse_args(argv)
 
     models = args.model or []
@@ -51,6 +58,8 @@ def main(argv=None) -> int:
         os.environ["QMT_MODEL"] = models[0]
     if args.base_url:
         os.environ["QMT_API_BASE"] = args.base_url
+    if args.record_dir:
+        os.environ["QMT_RECORD_DIR"] = os.path.abspath(args.record_dir)
 
     cap = None
     if args.capability:
