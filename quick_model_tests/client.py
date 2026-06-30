@@ -93,6 +93,35 @@ class ChatClient:
                 return
             yield json.loads(data)
 
+    def prompt_token_ids(self, prompt: str, n: int = 6) -> list:
+        """Return the first ``n`` prompt token ids the server actually tokenized
+        a raw ``/v1/completions`` prompt into, via ``prompt_logprobs`` (works
+        through gateways that don't expose ``/tokenize``).
+
+        The first ``prompt_logprobs`` entry is ``null`` (no logprob for the very
+        first token), so position 0 is returned as ``None``; positions 1+ carry
+        real ids. Raises ApiError if the endpoint doesn't return
+        ``prompt_logprobs``."""
+        body = {
+            "model": self.config.model,
+            "prompt": prompt,
+            "max_tokens": 1,
+            "temperature": 0,
+            "prompt_logprobs": 0,
+        }
+        resp = requests.post(
+            f"{self.config.api_base}/completions",
+            headers=self._headers(),
+            json=body,
+            timeout=self.config.timeout,
+        )
+        if not resp.ok:
+            raise ApiError(resp.status_code, resp.text)
+        pl = resp.json()["choices"][0].get("prompt_logprobs")
+        if not pl:
+            raise ApiError(resp.status_code, "endpoint returned no prompt_logprobs")
+        return [int(next(iter(e))) if e else None for e in pl[:n]]
+
     # -- convenience helpers used by suites ---------------------------------
 
     @staticmethod

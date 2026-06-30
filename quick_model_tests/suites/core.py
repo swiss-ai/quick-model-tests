@@ -9,9 +9,15 @@ This is the pattern other suites should follow:
 
 import pytest
 
-from quick_model_tests.client import ChatClient
+from quick_model_tests.client import ApiError, ChatClient
 
 pytestmark = pytest.mark.core
+
+# Apertus BOS is `<s>` = token id 1. The reasoning/answer chat template hardcodes
+# `{{ bos_token }}`, so a client that applies the template and posts the result to
+# /completions hits a server that prepends BOS again -> `<s><s>...` -> text
+# degeneration (apertus-program #420, raised by the SML eval team on vLLM 0.19).
+_APERTUS_BOS_ID = 1
 
 
 def test_core_health(client):
@@ -74,3 +80,32 @@ def test_core_usage(client):
     u = resp["usage"]
     assert u["prompt_tokens"] > 0 and u["completion_tokens"] > 0
     assert u["total_tokens"] == u["prompt_tokens"] + u["completion_tokens"]
+
+
+def test_core_no_double_bos(client, config):
+    """core-no-double-bos: the /completions path must not prepend a 2nd BOS.
+
+    The risk path is /completions (used by e.g. OpenWebUI): when a client applies
+    the chat template (which hardcodes `<s>`) and posts the rendered prompt, a
+    server that also auto-adds BOS produces `<s><s>...` -> degeneration (#420).
+
+    Detect it directly: tokenize a `<s>`-prefixed prompt via /completions
+    prompt_logprobs (gateway-friendly, unlike /tokenize). With a single BOS the
+    leading ids are [<s>, <first text token>, ...]; with a double BOS they are
+    [<s>, <s>, ...]. So the first non-null logprob position must NOT be the BOS.
+
+    Apertus-specific (BOS id known); skips for other models and when the endpoint
+    doesn't expose prompt_logprobs.
+    """
+    if "apertus" not in config.model.lower():
+        pytest.skip("double-BOS check is Apertus-specific (BOS='<s>', id 1)")
+    try:
+        ids = client.prompt_token_ids("<s>The capital of France is Paris.")
+    except ApiError as exc:
+        pytest.skip(f"/completions prompt_logprobs not available: {exc}")
+    first_known = next((i for i in ids if i is not None), None)
+    assert first_known != _APERTUS_BOS_ID, (
+        f"double-BOS on /completions: a '<s>'-prefixed prompt tokenized to two "
+        f"leading BOS tokens (first ids {ids}). A client posting a chat-templated "
+        f"prompt here gets `<s><s>...` -> degeneration (apertus-program #420)."
+    )
