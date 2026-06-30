@@ -214,9 +214,9 @@ def test_tools_parallel(client, tools_supported):
     assert all(n == "get_weather" for n in names), names
 
 
-def test_tools_loop(client, tools_supported):
-    """tools-loop: call -> append tool result with sentinel 4827 -> final
-    content contains '4827'.
+def test_tools_multiturn(client, tools_supported):
+    """tools-multiturn: a multi-turn tool round-trip -- call -> append the tool
+    result with sentinel 4827 -> final content contains '4827'.
 
     HARD FAIL today: the round-trip 400s the moment the assistant tool-call turn
     is re-sent (server chat-template bug, "can only concatenate str (not dict) to

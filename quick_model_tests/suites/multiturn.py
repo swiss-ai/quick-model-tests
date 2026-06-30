@@ -2,7 +2,7 @@
 
 Deterministic via a sentinel the model can't guess: state a code early, ask for
 it later, assert the exact code comes back. mt-tools (a tool call mid-
-conversation) is covered by the tools suite's tools-loop, which currently fails
+conversation) is covered by the tools suite's tools-multiturn, which currently fails
 on the -tools build (server chat-template bug), so it is not duplicated here.
 """
 

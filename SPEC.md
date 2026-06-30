@@ -201,7 +201,7 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | ID | Test | Pass criteria |
 |----|------|---------------|
 | tools-single | one tool offered, prompt forces use → `tool_calls[0].function.name` == expected; `arguments` is JSON-parseable and matches the declared schema (required keys present) |
-| tools-loop | call → append `tool` result message carrying sentinel `4827` → final `content` contains `"4827"`. **Fails on the `-tools` build** — it 400s with `"can only concatenate str (not dict) to str"` the moment an assistant `tool_calls` turn is echoed back (independent of the tool reply); a server-side chat-template bug. Passes on Qwen. |
+| tools-multiturn | multi-turn tool round-trip: call → append `tool` result message carrying sentinel `4827` → final `content` contains `"4827"`. **Fails on the `-tools` build** — it 400s with `"can only concatenate str (not dict) to str"` the moment an assistant `tool_calls` turn is echoed back (independent of the tool reply); a server-side chat-template bug. Passes on Qwen. |
 | tools-parallel | prompt needing 2 calls → ≥2 entries in `tool_calls`. **Fails on the `-tools` build** (a 2-target prompt yields a single call; parallel unsupported). Passes on Qwen. |
 | tools-leak | agentic system prompt + a `bash` tool, action request → a structured `tool_calls` entry with **no tool scaffolding leaking into `content`** (no bare tool name, no `<info>`/`<bash>`/`<\|...\|>`/`<think>` markup — SPEC line 148-149). **Fails on the `-tools` build** — it returns `content="bash"` beside the call (and under opencode's protocol leaks `<info>…</info>` with empty `tool_calls`, so agents execute nothing). Passes on Qwen (`content=null`). |
 | tools-choice | `tool_choice="required"` forces a call; a specific `{"function":{"name":...}}` forces that function (both confirmed) |
@@ -297,7 +297,7 @@ sections 7.4 / 7.6 with the real formats:
    chunk has empty `choices` + `usage`). **Open/broken:** parallel calls
    unsupported (2-target prompt → 1 call), and the multi-turn round-trip 400s
    when an assistant `tool_calls` turn is echoed back ("can only concatenate str
-   (not dict) to str" — server chat-template bug). See §7.3; `tools-loop` is
+   (not dict) to str" — server chat-template bug). See §7.3; `tools-multiturn` is
    `xfail` and `tools-parallel` skips until these are fixed server-side.
 4. **Capability matrix per model.** ADDRESSED: capabilities and tests are one
    thing. `quick-model-tests` runs the suites and renders a `✔/✗/⚠` table
@@ -329,7 +329,7 @@ sections 7.4 / 7.6 with the real formats:
 
 Every suite is now implemented (31 tests, no stubs). Deferred items, each noted
 in its suite docstring: `stream-equiv` (needs determinism, §9.5), `core-determinism`,
-`mt-tools` (covered by `tools-loop`), `reason-produced` (surfacing-dependent),
+`mt-tools` (covered by `tools-multiturn`), `reason-produced` (surfacing-dependent),
 and the optional `perf` suite.
 
 ## 11. Conventions for adding a test
