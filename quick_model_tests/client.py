@@ -156,14 +156,25 @@ class ChatClient:
     def content(response: dict) -> Optional[str]:
         return response["choices"][0]["message"].get("content")
 
+    # Field names different stacks use for the separate reasoning channel:
+    # vLLM/SGLang use `reasoning_content`; the swissai gateway uses `reasoning`
+    # (the DeepSeek-style name). Accept either, in priority order.
+    _REASONING_KEYS = ("reasoning_content", "reasoning")
+
     @staticmethod
     def reasoning_content(response: dict) -> Optional[str]:
         """The separate reasoning channel a reasoning-parser populates, or None.
 
-        vLLM/SGLang surface chain-of-thought in `message.reasoning_content`,
-        distinct from the user-facing `content`. None means the endpoint did not
-        split out a reasoning channel (a plain model, or the field was dropped)."""
-        return response["choices"][0]["message"].get("reasoning_content")
+        Surfaced under different field names by different stacks (see
+        `_REASONING_KEYS`). None means no reasoning channel was surfaced at all
+        (a plain model, or a gateway that drops it)."""
+        msg = response["choices"][0]["message"]
+        return next((msg[k] for k in ChatClient._REASONING_KEYS if msg.get(k)), None)
+
+    @staticmethod
+    def reasoning_delta(delta: dict) -> Optional[str]:
+        """The reasoning piece from a streaming `delta`, under either field name."""
+        return next((delta[k] for k in ChatClient._REASONING_KEYS if delta.get(k)), None)
 
     @staticmethod
     def stream_text(chunks) -> str:

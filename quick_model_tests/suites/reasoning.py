@@ -177,7 +177,7 @@ def test_reason_stream(client, reasoning_supported):
         # The terminal chunk carries usage with an empty `choices` list.
         for choice in ch.get("choices") or []:
             delta = choice.get("delta", {})
-            rc = delta.get("reasoning_content")
+            rc = ChatClient.reasoning_delta(delta)
             c = delta.get("content")
             if rc:
                 reasoning_parts.append(rc)
@@ -234,7 +234,7 @@ def test_reason_tools(client, reasoning_supported):
     assert fn["name"] == "get_weather", f"unexpected tool: {fn['name']!r}"
     json.loads(fn["arguments"])  # arguments must be JSON-parseable
 
-    for name in ("content", "reasoning_content"):
+    for name in ("content", "reasoning_content", "reasoning"):
         chan = resp["choices"][0]["message"].get(name) or ""
         leak = THINK_TOKEN_RE.search(chan)
         assert not leak, (
