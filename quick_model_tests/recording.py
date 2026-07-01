@@ -17,10 +17,23 @@ This is a passive recorder: it never changes what is sent or asserted, so it
 keeps the suite's "general capability" behaviour identical with or without it.
 """
 
+import json
 import os
 
 # Set per-test by the autouse fixture in conftest. ``dir`` None => recording off.
 _ctx = {"dir": None, "test": None, "model": None}
+
+
+def _pretty(text: str):
+    """(formatted_text, extension). If ``text`` is JSON, pretty-print it and use
+    a ``.json`` extension; otherwise pass it through as ``.txt`` (e.g. an SSE
+    stream, which is ``data: {…}`` lines, not a single JSON document)."""
+    if text.lstrip()[:1] in "{[":
+        try:
+            return json.dumps(json.loads(text), indent=2, ensure_ascii=False), "json"
+        except (ValueError, TypeError):
+            pass
+    return text, "txt"
 
 
 def configure(record_dir, test, model) -> None:
@@ -45,13 +58,14 @@ def record(kind: str, text: str) -> None:
     test = _ctx.get("test")
     if not base or not test:
         return
+    body, ext = _pretty(text)
     try:
         folder = os.path.join(base, _safe(test))
         os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"{_safe(_ctx['model'])}_{kind}.txt")
+        path = os.path.join(folder, f"{_safe(_ctx['model'])}_{kind}.{ext}")
         with open(path, "a", encoding="utf-8") as fh:
             if fh.tell():  # separate multiple calls within one test
                 fh.write("\n" + "-" * 60 + "\n")
-            fh.write(text.rstrip("\n") + "\n")
+            fh.write(body.rstrip("\n") + "\n")
     except OSError:
         pass
