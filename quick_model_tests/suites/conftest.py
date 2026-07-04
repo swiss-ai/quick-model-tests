@@ -46,3 +46,21 @@ def config() -> Config:
 @pytest.fixture(scope="session")
 def client(config) -> ChatClient:
     return ChatClient(config)
+
+
+@pytest.fixture(autouse=True)
+def _record_responses(request):
+    """Record each test's request/response when --record-responses DIR is set
+    (plumbed via QMT_RECORD_DIR). Passive: it never alters what is sent or
+    asserted, so suite behaviour is identical with or without it."""
+    import os
+
+    from quick_model_tests import recording
+
+    recording.configure(
+        os.environ.get("QMT_RECORD_DIR"),
+        request.node.name,
+        os.environ.get("QMT_MODEL", "model"),
+    )
+    yield
+    recording.reset()

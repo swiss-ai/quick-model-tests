@@ -11,7 +11,31 @@ from typing import Optional
 
 import requests
 
+from . import recording
 from .config import Config
+
+
+def _record_iter_lines(resp: "requests.Response") -> None:
+    """Wrap ``resp.iter_lines`` so the streamed SSE body is recorded as the
+    consumer drains it. Records on normal exhaustion or early close (finally),
+    while the test context is still active. No-op when recording is off."""
+    original = resp.iter_lines
+
+    def teed(*args, **kwargs):
+        buf = []
+        try:
+            for line in original(*args, **kwargs):
+                if line:
+                    buf.append(
+                        line
+                        if isinstance(line, str)
+                        else line.decode("utf-8", "replace")
+                    )
+                yield line
+        finally:
+            recording.record("output", "\n".join(buf))
+
+    resp.iter_lines = teed
 
 
 class ApiError(Exception):
@@ -66,13 +90,23 @@ class ChatClient:
 
     def raw(self, payload: dict, *, stream: bool = False) -> requests.Response:
         """Escape hatch for error-path / malformed-request tests."""
-        return requests.post(
+        recording.record("input", json.dumps(payload, indent=2, ensure_ascii=False))
+        resp = requests.post(
             f"{self.config.api_base}/chat/completions",
             headers=self._headers(),
             json=payload,
             stream=stream,
             timeout=self.config.timeout,
         )
+        if not stream:
+            # Non-stream body is safe to read here; requests caches it so the
+            # caller's .json()/.text still works.
+            recording.record("output", resp.text)
+        else:
+            # Tee iter_lines so the SSE body is recorded as whoever consumes it
+            # (client.stream() OR a test iterating raw() directly) drains it.
+            _record_iter_lines(resp)
+        return resp
 
     def chat(self, messages, **kw) -> dict:
         resp = self.raw(self._payload(messages, stream=False, **kw))
@@ -85,7 +119,7 @@ class ChatClient:
         resp = self.raw(self._payload(messages, stream=True, **kw), stream=True)
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)
-        for line in resp.iter_lines(decode_unicode=True):
+        for line in resp.iter_lines(decode_unicode=True):  # teed by raw() to record
             if not line or not line.startswith("data:"):
                 continue
             data = line[len("data:") :].strip()
@@ -174,7 +208,9 @@ class ChatClient:
     @staticmethod
     def reasoning_delta(delta: dict) -> Optional[str]:
         """The reasoning piece from a streaming `delta`, under either field name."""
-        return next((delta[k] for k in ChatClient._REASONING_KEYS if delta.get(k)), None)
+        return next(
+            (delta[k] for k in ChatClient._REASONING_KEYS if delta.get(k)), None
+        )
 
     @staticmethod
     def stream_text(chunks) -> str:
