@@ -17,6 +17,8 @@ import json
 
 import pytest
 
+from quick_model_tests.client import ChatClient
+
 pytestmark = pytest.mark.streaming
 
 # Thinking-safe budget: a reasoning model streams a stripped `<think>` block
@@ -112,4 +114,31 @@ def test_stream_stop(client):
     assert content.strip() or reasoning.strip() or finish == "stop", (
         f"no streamed output in either channel and "
         f"finish_reason={finish!r} (expected 'stop')"
+    )
+
+
+def test_stream_equiv(client):
+    """stream-equiv: streamed content == non-streamed content at temperature=0.
+
+    `chat()`/`stream()` both send temperature=0, so the two transport paths must
+    return the same answer text. A mismatch means the streaming and non-streaming
+    code paths disagree (different templating/decoding), or the endpoint is not
+    deterministic at temp=0 (SPEC.md open question 5) -- either is a real finding.
+    Compares the user-facing `content` channel; skips if neither path produced any.
+    """
+    prompt = [{"role": "user", "content": "List the days of the week, one per line."}]
+    # Thinking-safe budget: a reasoning model streams a stripped `<think>` block
+    # before any content delta, so a tight budget yields empty content on both
+    # paths and nothing to compare.
+    non_stream = (
+        ChatClient.content(client.chat(prompt, max_tokens=_THINKING_MAX_TOKENS)) or ""
+    ).strip()
+    streamed = ChatClient.stream_text(
+        client.stream(prompt, max_tokens=_THINKING_MAX_TOKENS)
+    ).strip()
+    if not non_stream and not streamed:
+        pytest.skip("no content in either path to compare")
+    assert streamed == non_stream, (
+        f"stream vs non-stream content differ at temp=0:\n"
+        f"  stream={streamed!r}\n  non-stream={non_stream!r}"
     )

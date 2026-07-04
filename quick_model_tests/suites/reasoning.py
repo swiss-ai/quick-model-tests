@@ -58,6 +58,12 @@ THINK_TOKEN_RE = re.compile(
     r"<\|inner_prefix\|>|<\|inner_suffix\|>|</?think\b|<\|[^>]*\|>", re.IGNORECASE
 )
 
+# The literal boundary tokens Apertus 1.5 emits around its chain-of-thought. If
+# these survive in `content` (visible only with skip_special_tokens=false) while
+# `reasoning_content` stays empty, the model IS thinking but the server's
+# reasoning parser isn't splitting on them. See test_reason_parser_wired.
+_REASON_DELIMS = ("<|inner_prefix|>", "<|inner_suffix|>")
+
 WEATHER_TOOL = {
     "type": "function",
     "function": {
@@ -89,6 +95,42 @@ def reasoning_supported(client):
             "(plain model, or the gateway drops the field)"
         )
     return resp
+
+
+def test_reason_parser_wired(client):
+    """reason-parser-wired: if the model emits reasoning delimiters, the server's
+    reasoning parser must actually split on them.
+
+    Independent of the `reasoning_supported` probe on purpose -- it targets the
+    exact failure that probe hides: the model DOES think (emits
+    `<|inner_prefix|>...<|inner_suffix|>`) but the parser doesn't extract it, so
+    `reasoning_content` is empty and the raw monologue is left in `content` (with
+    the delimiters stripped as special tokens on the default decode).
+
+    Requests with `skip_special_tokens=false` so the boundary tokens are visible.
+    - reasoning_content populated            -> parser is wired  (PASS)
+    - delimiters in content, reasoning empty -> parser NOT wired (FAIL)
+    - no delimiters at all                   -> not a thinking build (SKIP)
+    """
+    try:
+        resp = client.chat(
+            [{"role": "user", "content": REASONING_PROMPT}],
+            max_tokens=REASON_MAX_TOKENS,
+            extra={"skip_special_tokens": False},
+        )
+    except ApiError as exc:
+        pytest.skip(f"endpoint rejected skip_special_tokens override: {exc}")
+    content = ChatClient.content(resp) or ""
+    reasoning = ChatClient.reasoning_content(resp) or ""
+    if reasoning.strip():
+        return  # parser populated the reasoning channel -> wired
+    if any(tok in content for tok in _REASON_DELIMS):
+        pytest.fail(
+            "reasoning parser not wired to the emitted delimiters: the model "
+            f"emitted {_REASON_DELIMS} but reasoning_content is empty, so the "
+            f"chain-of-thought leaks into content. content[:200]={content[:200]!r}"
+        )
+    pytest.skip("model emitted no reasoning delimiters (not a thinking build)")
 
 
 def test_reason_produced(reasoning_supported):

@@ -73,6 +73,16 @@ LOOKUP_TOOL = {
     },
 }
 
+# A tool with NO parameters -- exercises the empty-arguments path of the parser.
+PING_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "ping",
+        "description": "Ping the server. Takes no arguments.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 
 def _tool_calls(resp: dict) -> list:
     """tool_calls for choice 0, normalized to a list (never None)."""
@@ -81,18 +91,26 @@ def _tool_calls(resp: dict) -> list:
 
 @pytest.fixture(scope="session")
 def tools_supported(client):
-    """Probe once: does the configured model emit tool_calls when forced?
+    """Probe once: does the model emit a tool_call for an obvious NATURAL prompt?
 
-    HARD FAIL (not skip) when the target model lacks tool calling -- pointing
-    this suite at a non-tools model is treated as an error so the gate goes red,
-    never silently green. Run it against a tool-capable build (see module doc).
+    Probes with the DEFAULT tool_choice (auto), not `required`, on purpose: a
+    weather question with a weather tool offered should elicit a call from any
+    tool-capable model. Forcing (`tool_choice="required"`) is itself a separate,
+    breakable code path -- e.g. the Apertus `-THINKING` endpoint returns
+    finish_reason="tool_calls" but an EMPTY call list under force while auto works
+    fine -- so gating on the forced path would mis-report the whole suite as
+    broken when natural calling is healthy. The forced path is exercised (and
+    allowed to fail on its own) by tools-choice-required / tools-choice-named.
+
+    HARD FAIL (not skip) when even natural calling produces nothing -- pointing
+    this suite at a non-tools model is an error so the gate goes red, never
+    silently green. Run it against a tool-capable build (see module doc).
     """
     try:
         resp = client.chat(
-            [{"role": "user", "content": "What is the weather in Paris?"}],
+            [{"role": "user", "content": "What is the weather in Paris? Use the tool."}],
             # generous budget: a reasoning model may think before it tool-calls
             tools=[WEATHER_TOOL],
-            tool_choice="required",
             max_tokens=256,
         )
     except ApiError as e:
@@ -101,7 +119,8 @@ def tools_supported(client):
             f"({e.status}): {e.body[:200]}"
         )
     assert _tool_calls(resp), (
-        f"model {client.config.model!r} produced no tool_calls when forced"
+        f"model {client.config.model!r} produced no tool_calls for a natural "
+        f"tool prompt (auto tool_choice)"
     )
     return True
 
@@ -349,4 +368,119 @@ def test_tools_no_content_leak(client, tools_supported):
     leaked_names = {c["function"]["name"].lower() for c in calls}
     assert content.lower() not in leaked_names, (
         f"bare tool name leaked into content beside the call: {content!r}"
+    )
+
+
+# A tool whose schema exercises the parser: a required enum and a required nested
+# object with its own required field -- so "the call parsed" is not enough; the
+# arguments must actually conform.
+_SCHEMA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "book_flight",
+        "description": "Book a flight for a passenger.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "destination": {"type": "string", "description": "Destination city"},
+                "cabin": {
+                    "type": "string",
+                    "enum": ["economy", "business", "first"],
+                    "description": "Cabin class",
+                },
+                "passenger": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+            },
+            "required": ["destination", "cabin", "passenger"],
+        },
+    },
+}
+_CABINS = {"economy", "business", "first"}
+
+
+def test_tools_arg_schema(client, tools_supported):
+    """tools-arg-schema: a forced tool call emits arguments that CONFORM to the
+    declared schema.
+
+    Beyond "a call happened" (which tools-single covers): the tool parser must
+    produce JSON that parses AND satisfies the schema -- required keys present,
+    the enum value legal, the nested object shaped right.
+    """
+    resp = client.chat(
+        [{"role": "user", "content": "Book a business-class flight to Tokyo for Alice."}],
+        tools=[_SCHEMA_TOOL],
+        tool_choice="required",
+        max_tokens=512,
+    )
+    calls = _tool_calls(resp)
+    assert calls, (
+        "tool_choice='required' returned no tool_calls (forced-choice path broken); "
+        f"finish_reason={resp['choices'][0]['finish_reason']!r}"
+    )
+    fn = calls[0]["function"]
+    assert fn["name"] == "book_flight", f"unexpected tool: {fn['name']!r}"
+    args = json.loads(fn["arguments"])
+    for key in ("destination", "cabin", "passenger"):
+        assert key in args, f"missing required arg {key!r}: {args!r}"
+    assert args["cabin"] in _CABINS, (
+        f"cabin {args['cabin']!r} not in enum {sorted(_CABINS)}"
+    )
+    passenger = args["passenger"]
+    assert isinstance(passenger, dict) and "name" in passenger, (
+        f"passenger missing required nested 'name': {passenger!r}"
+    )
+
+
+def test_tools_empty_args(client, tools_supported):
+    """tools-empty-args: a call to a no-parameter tool still emits a JSON object.
+
+    The empty-arguments case has its own failure mode: some parsers emit `""` or
+    `null` instead of `"{}"`, which breaks strict OpenAI clients that
+    `json.loads(arguments)`. Distinct from tools-arg-schema (which needs a
+    non-trivial object). Force a call to a parameterless tool and require the
+    arguments to parse to a dict.
+    """
+    resp = client.chat(
+        [{"role": "user", "content": "Call the ping tool."}],
+        tools=[PING_TOOL],
+        tool_choice="required",
+        max_tokens=128,
+    )
+    calls = _tool_calls(resp)
+    assert calls, (
+        "tool_choice='required' returned no tool_calls (forced-choice path broken); "
+        f"finish_reason={resp['choices'][0]['finish_reason']!r}"
+    )
+    fn = calls[0]["function"]
+    assert fn["name"] == "ping", f"unexpected tool: {fn['name']!r}"
+    raw = fn["arguments"]
+    try:
+        args = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        pytest.fail(
+            f"empty-arg call arguments not JSON-parseable ({exc}); expected '{{}}', "
+            f"got {raw!r} (breaks strict OpenAI clients)"
+        )
+    assert isinstance(args, dict), f"expected a JSON object for empty args, got: {args!r}"
+
+
+def test_tools_phantom(client, tools_supported):
+    """tools-phantom: the model must not fabricate a call to an un-offered tool.
+
+    Only `get_weather` is offered, but the prompt asks for a flight booking (no
+    such tool exists). The model may answer in prose or decline, but it must NOT
+    invent a call to a function that was never provided -- a hallucinated tool name
+    is a real correctness gap for any agent that dispatches on it.
+    """
+    resp = client.chat(
+        [{"role": "user", "content": "Book me a flight to Tokyo."}],
+        tools=[WEATHER_TOOL],
+        max_tokens=256,
+    )
+    names = [c["function"]["name"] for c in _tool_calls(resp)]
+    assert all(n == "get_weather" for n in names), (
+        f"model fabricated a call to an un-offered tool: {names}"
     )
