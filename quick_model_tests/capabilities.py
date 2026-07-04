@@ -152,7 +152,11 @@ def report(
         print(f"  {_ICON[r.status]} {r.name:<{w}}  {r.detail}")
     n_pass = sum(1 for r in results if r.status == PASS)
     n_fail = sum(1 for r in results if r.status in (FAIL, BROKEN))
-    print(f"\n  {len(results)} checks; {n_pass} passed, {n_fail} failed/broken")
+    n_skip = sum(1 for r in results if r.status == SKIP)
+    print(f"\n  {len(results)} checks")
+    print(f"  {n_pass} passed")
+    print(f"  {n_fail} failed/broken")
+    print(f"  {n_skip} skipped")
     return _exit_code(results)
 
 
@@ -194,17 +198,33 @@ def report_compare(
         print("(no checks ran -- unknown --capability, or no API key?)")
         return 1
     cols = [f"M{i + 1}" for i in range(len(runs))]
-    w = max(len(n) for n in names)
+    colw = [len(c) for c in cols]
+    w = max(len(n) for n in names + ["passed", "failed/broken", "skipped"])
     print(f"Capability comparison ({configs[0].api_base})\n")
-    print(f"| {'Check':<{w}} | " + " | ".join(cols) + " |")
-    print(f"|{'-' * (w + 2)}|" + "----|" * len(cols))
+    header = " | ".join(f"{c:<{cw}}" for c, cw in zip(cols, colw))
+    print(f"| {'Check':<{w}} | " + header + " |")
+    print(f"|{'-' * (w + 2)}|" + "".join("-" * (cw + 2) + "|" for cw in colw))
     for n in names:
         cells = []
         for _, res in runs:
             r = res.get(n)
             cells.append(_ICON.get(r.status, " ") if r else " ")
-        cells = [f"{c:<{len(col)}}" for c, col in zip(cells, cols)]
+        cells = [f"{c:<{cw}}" for c, cw in zip(cells, colw)]
         print(f"| {n:<{w}} | " + " | ".join(cells) + " |")
+    # double line separating the checks from the tally
+    print(f"|{'=' * (w + 2)}|" + "".join("=" * (cw + 2) + "|" for cw in colw))
+    # per-model tally, one row each for passed / failed-broken / skipped
+    tally_rows = [
+        ("passed", lambda r: r.status == PASS),
+        ("failed/broken", lambda r: r.status in (FAIL, BROKEN)),
+        ("skipped", lambda r: r.status == SKIP),
+    ]
+    for label, match in tally_rows:
+        cells = [
+            f"{sum(1 for r in res.values() if match(r)):<{cw}}"
+            for (_, res), cw in zip(runs, colw)
+        ]
+        print(f"| {label:<{w}} | " + " | ".join(cells) + " |")
     print("\nLegend: ✔ pass · ✗ fail · ⚠ broken · – skip")
     for i, (m, _) in enumerate(runs):
         print(f"M{i + 1} = {m}")
