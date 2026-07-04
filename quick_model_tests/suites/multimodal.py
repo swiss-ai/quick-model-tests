@@ -32,6 +32,8 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets"
 # Special / control tokens that must never leak into user-visible content.
 SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?(?:think|info|bash)\b", re.IGNORECASE)
 
+MAX_TOKENS = 2 ** 14  # a generous budget for multimodal tests, see core.py / SPEC.md 7.6
+
 
 def _data_url(name: str, mime: str) -> str:
     raw = (ASSETS / name).read_bytes()
@@ -73,7 +75,7 @@ def mm_supported(client):
                     ],
                 }
             ],
-            max_tokens=32,
+            max_tokens=MAX_TOKENS,
         )
     except ApiError as e:
         pytest.fail(f"model {client.config.model!r} rejected image input ({e.status})")
@@ -97,7 +99,7 @@ def test_mm_image_small(client, mm_supported):
                 ],
             }
         ],
-        max_tokens=32,
+        max_tokens=MAX_TOKENS,
     )
     content = _content(resp)
     assert "4827" in content, f"sentinel not read from image: {content!r}"
@@ -116,7 +118,7 @@ def test_mm_image_large(client, mm_supported):
                 ],
             }
         ],
-        max_tokens=32,
+        max_tokens=MAX_TOKENS,
     )
     content = _content(resp)
     assert content, "empty response for large image"
@@ -138,7 +140,7 @@ def test_mm_image_multi(client, mm_supported):
                 ],
             }
         ],
-        max_tokens=64,
+        max_tokens=MAX_TOKENS,
     )
     content = _content(resp)
     assert "4827" in content and "1593" in content, (
@@ -155,7 +157,7 @@ def test_mm_audio_small(client, mm_supported):
                 "content": [_text("Transcribe the audio."), _audio("audio_fox.wav")],
             }
         ],
-        max_tokens=64,
+        max_tokens=MAX_TOKENS,
     )
     content = _content(resp).lower()
     assert "fox" in content, f"audio sentinel 'fox' not transcribed: {content!r}"
@@ -170,7 +172,7 @@ def test_mm_audio_large(client, mm_supported):
                 "content": [_text("Transcribe the audio."), _audio("audio_large.wav")],
             }
         ],
-        max_tokens=128,
+        max_tokens=MAX_TOKENS,
     )
     content = _content(resp).lower()
     assert content, "empty response for large audio"
@@ -190,7 +192,7 @@ def test_mm_interleaved(client, mm_supported):
                 ],
             }
         ],
-        max_tokens=128,
+        max_tokens=MAX_TOKENS,
     )
     content = _content(resp)
     assert content, "empty response for interleaved image+audio"

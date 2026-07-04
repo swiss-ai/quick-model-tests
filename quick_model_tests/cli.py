@@ -59,6 +59,11 @@ def main(argv=None) -> int:
     if args.base_url:
         os.environ["QMT_API_BASE"] = args.base_url
     if args.record_dir:
+        if os.path.exists(args.record_dir):
+            p.error(
+                f"--record-responses directory already exists: {args.record_dir} "
+                f"(refusing to overwrite; choose a new path or remove it)"
+            )
         os.environ["QMT_RECORD_DIR"] = os.path.abspath(args.record_dir)
 
     cap = None
