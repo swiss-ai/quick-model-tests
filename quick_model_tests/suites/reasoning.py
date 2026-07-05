@@ -40,16 +40,13 @@ from quick_model_tests.client import ApiError, ChatClient
 pytestmark = pytest.mark.reasoning
 
 # Budget for reasoning prompts: thinking + answer can run long; don't truncate.
-REASON_MAX_TOKENS = 1024
+REASON_MAX_TOKENS = 4096
 
 # A reasoning-eliciting prompt whose answer is a known sentinel (8*9 = 72). Used
 # by the probe and the streaming check so the answer is deterministically
 # assertable in `content`.
-REASONING_PROMPT = (
-    "Think step by step, then answer: what is 8 times 9? "
-    "Put only the final number on the last line."
-)
-ANSWER_SENTINEL = "72"
+REASONING_PROMPT = "Think step by step, then give the answer: if a train travels 60 km in 1.5 hours, what is its average speed in km/h?"
+ANSWER_SENTINEL = "40"
 
 # Raw boundary / special tokens that must never appear in EITHER channel: the
 # parser is expected to consume the delimiters, not relocate them. `<|...|>`
@@ -142,9 +139,9 @@ def test_reason_produced(reasoning_supported):
     reasoning = ChatClient.reasoning_content(resp) or ""
     content = ChatClient.content(resp) or ""
     assert reasoning.strip(), "reasoning_content empty -- parser produced no thinking"
-    assert content.strip(), (
-        "content empty -- parser swallowed the answer into reasoning_content"
-    )
+    assert (
+        content.strip()
+    ), "content empty -- parser swallowed the answer into reasoning_content"
 
 
 def test_reason_separation(client):
@@ -167,9 +164,9 @@ def test_reason_separation(client):
     )
     assert content.strip(), "empty content"
     leak = THINK_TOKEN_RE.search(content)
-    assert not leak, (
-        f"raw reasoning token {leak.group(0)!r} leaked into content: {content!r}"
-    )
+    assert (
+        not leak
+    ), f"raw reasoning token {leak.group(0)!r} leaked into content: {content!r}"
 
 
 def test_reason_clean_channel(reasoning_supported):
@@ -233,12 +230,12 @@ def test_reason_stream(client, reasoning_supported):
 
     assert reasoning.strip(), "no streamed reasoning_content deltas"
     assert content.strip(), "no streamed content deltas"
-    assert not reasoning_after_content, (
-        "reasoning_content resumed after content began -- boundary is not monotonic"
-    )
-    assert ANSWER_SENTINEL in content, (
-        f"expected {ANSWER_SENTINEL!r} in streamed content, got: {content!r}"
-    )
+    assert (
+        not reasoning_after_content
+    ), "reasoning_content resumed after content began -- boundary is not monotonic"
+    assert (
+        ANSWER_SENTINEL in content
+    ), f"expected {ANSWER_SENTINEL!r} in streamed content, got: {content!r}"
     for name, chan in (("reasoning_content", reasoning), ("content", content)):
         leak = THINK_TOKEN_RE.search(chan)
         assert not leak, f"raw token {leak.group(0)!r} leaked into streamed {name}"
@@ -279,9 +276,9 @@ def test_reason_tools(client, reasoning_supported):
     for name in ("content", "reasoning_content", "reasoning"):
         chan = resp["choices"][0]["message"].get(name) or ""
         leak = THINK_TOKEN_RE.search(chan)
-        assert not leak, (
-            f"tool/boundary scaffolding {leak.group(0)!r} leaked into {name}"
-        )
+        assert (
+            not leak
+        ), f"tool/boundary scaffolding {leak.group(0)!r} leaked into {name}"
 
 
 def test_reason_disabled(client, reasoning_supported):
