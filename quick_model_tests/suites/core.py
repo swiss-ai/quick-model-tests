@@ -280,6 +280,90 @@ def test_core_bos_single_token(client):
     )
 
 
+def _discover_bos(client):
+    """Return the model's BOS id, or skip if it has none / tokenizer is absent.
+
+    The BOS is the id that ``add_special_tokens=True`` prepends and
+    ``add_special_tokens=False`` does not. If they agree, the model auto-prepends
+    nothing (e.g. Qwen has no BOS) and double-BOS is impossible."""
+    try:
+        with_special = client.tokenize("Paris", add_special_tokens=True)
+        without_special = client.tokenize("Paris", add_special_tokens=False)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    if not with_special or with_special == without_special:
+        pytest.skip("model does not auto-prepend a BOS (double-BOS not possible)")
+    return with_special[0]
+
+
+def _leading_bos_count(ids, bos_id):
+    """How many BOS ids the sequence starts with (0, 1, or more)."""
+    n = 0
+    for t in ids:
+        if t == bos_id:
+            n += 1
+        else:
+            break
+    return n
+
+
+def test_core_no_double_bos_chat(client):
+    """core-no-double-bos-chat: the /chat tokenization path must not add a 2nd BOS
+    on top of the template's own.
+
+    This is the path the bug was reported on (apertus-program #420): the chat
+    template emits `{{ bos_token }}`, so the rendered chat prompt already starts
+    with `<s>`. If the server then tokenizes that rendered string with
+    `add_special_tokens=True` -- which the Apertus multimodal path restores via
+    `mm_processor.info.default_tok_params` -- the prompt begins `<s><s>...` ->
+    degeneration. `core-no-double-bos` probes the same fault on /completions with a
+    hand-crafted prompt; this probes the real chat path a chat client hits, by
+    asking /tokenize to apply the server's own template.
+    """
+    bos_id = _discover_bos(client)
+    try:
+        ids = client.tokenize_chat(
+            [{"role": "user", "content": "The capital of France is Paris."}]
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+    if not ids:
+        pytest.skip("chat tokenization returned no tokens")
+    leading = _leading_bos_count(ids, bos_id)
+    assert leading <= 1, (
+        f"double-BOS on the chat path: the server applied its chat template (which "
+        f"emits the BOS) and then tokenized with add_special_tokens=True, so the "
+        f"prompt starts with {leading} BOS tokens (id {bos_id}, first ids "
+        f"{ids[:6]}) -> `<s><s>...` -> degeneration (apertus-program #420)."
+    )
+
+
+def test_core_no_double_bos_tokenize(client):
+    """core-no-double-bos-tokenize: /tokenize must not add a 2nd BOS to a string
+    that already begins with the BOS.
+
+    Same fault as `core-no-double-bos`, but observed through `/tokenize` instead of
+    `/completions` `prompt_logprobs`, so the check still fires on gateways that
+    expose one endpoint but not the other. Prefixes the BOS string onto a prompt
+    (mimicking an already-rendered chat template), tokenizes with
+    `add_special_tokens=True`, and asserts the result does not start with two BOS.
+    """
+    bos_id = _discover_bos(client)
+    try:
+        bos_str = client.detokenize([bos_id])
+        ids = client.tokenize(
+            f"{bos_str}The capital of France is Paris.", add_special_tokens=True
+        )
+    except ApiError as exc:
+        pytest.skip(f"/detokenize not available: {exc}")
+    assert _leading_bos_count(ids, bos_id) <= 1, (
+        f"double-BOS on /tokenize: a {bos_str!r}-prefixed prompt tokenized to two "
+        f"leading BOS tokens (id {bos_id}, first ids {ids[:6]}). A client posting a "
+        f"chat-templated prompt gets `{bos_str}{bos_str}...` -> degeneration "
+        f"(apertus-program #420)."
+    )
+
+
 def test_core_no_degeneration(client):
     """core-no-degeneration: a normal prompt produces coherent, non-degenerate text.
 
