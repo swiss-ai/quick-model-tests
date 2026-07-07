@@ -364,6 +364,56 @@ def test_core_no_double_bos_tokenize(client):
     )
 
 
+# Recognizable start-of-sequence tokens across model families. Used to identify
+# the BOS from a rendered chat prompt WITHOUT relying on the tokenizer
+# auto-prepending it -- after a template-owns fix (apertus-program #420) the
+# tokenizer no longer adds a BOS, but the chat template still emits one as the
+# rendered prompt's first token.
+_BOS_TOKEN_RE = re.compile(
+    r"^\s*(?:<s>|<\|begin_of_text\|>|<\|startoftext\|>|<bos>|\[BOS\]|"
+    r"<\|begin▁of▁sentence\|>)\s*$"
+)
+
+
+def test_core_bos_single_in_chat(client):
+    """core-bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
+
+    The *positive* companion to the double-BOS probes. Once the chat template is
+    the sole BOS owner (the fix for apertus-program #420), the tokenizer no longer
+    auto-prepends a BOS, so `_discover_bos` -- and every check that depends on it --
+    skips. This check instead reads the BOS straight from the rendered chat prompt
+    (the template emits it first), so it keeps *running* -- and stays green -- after
+    the fix, asserting the surviving invariant: when the chat prompt begins with a
+    BOS, there is exactly one, never two (the original bug). Model-agnostic: a chat
+    format whose first token is not a recognizable BOS -- whether a model with no
+    BOS (e.g. Qwen) or a regression that dropped it -- skips rather than failing, so
+    this is a guard against re-doubling, not against a zero-BOS over-correction
+    (which `core-no-degeneration` would surface instead).
+    """
+    try:
+        ids = client.tokenize_chat([{"role": "user", "content": "Paris"}])
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+    if len(ids) < 2:
+        pytest.skip("chat tokenization returned too few tokens")
+    try:
+        bos_str = client.detokenize([ids[0]])
+    except ApiError as exc:
+        pytest.skip(f"/detokenize not available: {exc}")
+    if not _BOS_TOKEN_RE.match(bos_str):
+        pytest.skip(
+            f"chat prompt does not begin with a recognizable BOS ({bos_str!r}); "
+            f"model's chat format carries no leading BOS"
+        )
+    count = _leading_bos_count(ids, ids[0])
+    assert count == 1, (
+        f"chat prompt must begin with exactly one BOS, got {count} leading "
+        f"{bos_str!r} (first ids {ids[:6]}). Two means the double-BOS regression "
+        f"is back -- the chat template must be the sole BOS owner "
+        f"(apertus-program #420)."
+    )
+
+
 def test_core_no_degeneration(client):
     """core-no-degeneration: a normal prompt produces coherent, non-degenerate text.
 
