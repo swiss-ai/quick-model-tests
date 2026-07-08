@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from quick_model_tests.client import ApiError, ChatClient
+from quick_model_tests.suites.core import _discover_bos_from_chat, _leading_bos_count
 
 pytestmark = pytest.mark.multimodal
 
@@ -197,3 +198,42 @@ def test_mm_interleaved(client, mm_supported):
     content = _content(resp)
     assert content, "empty response for interleaved image+audio"
     assert not SPECIAL_TOKEN_RE.search(content), f"token leak: {content!r}"
+
+
+def test_mm_bos_single_in_chat(client):
+    """mm-bos-single-in-chat: a multimodal chat prompt begins with exactly one BOS.
+
+    The exact path apertus-program #420 was reported on: vLLM's multimodal
+    tokenization restores ``add_special_tokens=True`` (via
+    ``mm_processor.info.default_tok_params``), so if the chat template also emits
+    ``{{ bos_token }}`` the rendered prompt starts ``<s><s>``. This tokenizes an
+    image+text chat through the server's own template and asserts exactly one
+    leading BOS -- the mm counterpart to ``core-no-double-bos-chat``. Skips if
+    ``/tokenize`` does not accept multimodal messages or the model has no BOS.
+
+    (Best-effort proxy: ``/tokenize`` may not traverse the same mm code path as
+    generation, but it is the only observable surface for the rendered mm prompt.)
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                _text("What number is written in this image? Digits only."),
+                _image("image_4827.png"),
+            ],
+        }
+    ]
+    try:
+        ids = client.tokenize_chat(messages)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept multimodal messages: {exc}")
+    if not ids:
+        pytest.skip("multimodal chat tokenization returned no tokens")
+    count = _leading_bos_count(ids, bos_id)
+    assert count == 1, (
+        f"multimodal chat prompt must begin with exactly one BOS (id {bos_id}, "
+        f"{bos_str!r}), got {count} (first ids {ids[:6]}). Two is the multimodal "
+        f"double-BOS from `default_tok_params` restoring add_special_tokens=True "
+        f"(apertus-program #420)."
+    )

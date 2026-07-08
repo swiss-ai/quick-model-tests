@@ -467,6 +467,54 @@ def test_core_bos_single_in_completion(client):
     )
 
 
+def test_core_bos_absent_without_specials(client):
+    """core-bos-absent-without-specials: add_special_tokens=False prepends no BOS.
+
+    The escape hatch that lets a caller which supplies its own BOS -- e.g. posting
+    an already-rendered chat template -- avoid a double: with
+    `add_special_tokens=False` the tokenizer must add nothing. Discovers the BOS
+    from the chat template, then asserts a plain `add_special_tokens=False`
+    tokenization does not begin with it. Skips for models with no BOS.
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    try:
+        raw = client.tokenize(
+            "The capital of France is Paris.", add_special_tokens=False
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    assert not raw or raw[0] != bos_id, (
+        f"add_special_tokens=False still prepended the BOS (id {bos_id}, "
+        f"{bos_str!r}); first ids {raw[:6]}. The no-specials path must be clean so a "
+        f"client supplying its own BOS is not doubled (apertus-program #420)."
+    )
+
+
+def test_core_bos_consistent_identity(client):
+    """core-bos-consistent-identity: the chat and raw paths agree on the BOS token.
+
+    The BOS the chat template emits must be the same id the tokenizer prepends on
+    the raw `add_special_tokens=True` path -- otherwise the two paths feed the model
+    different 'start' tokens. Only checked when the raw path actually prepends a BOS
+    (skips on the over-corrected config with no raw-path BOS, which
+    `core-bos-single-in-completion` already flags).
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    try:
+        with_special = client.tokenize("Paris", add_special_tokens=True)
+        without_special = client.tokenize("Paris", add_special_tokens=False)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    if not with_special or with_special == without_special:
+        pytest.skip("raw path prepends no BOS (see core-bos-single-in-completion)")
+    assert with_special[0] == bos_id, (
+        f"BOS identity mismatch: the chat template emits id {bos_id} ({bos_str!r}) "
+        f"but the raw add_special_tokens=True path prepends id {with_special[0]}. "
+        f"Both paths must feed the model the same BOS it was trained with "
+        f"(apertus-program #420)."
+    )
+
+
 def test_core_no_degeneration(client):
     """core-no-degeneration: a normal prompt produces coherent, non-degenerate text.
 
