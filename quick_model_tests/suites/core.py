@@ -39,6 +39,11 @@ _CONTROL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?s>|\[/?INST\]|</?think\b", re.IG
 # budget (core-maxtokens, core-usage) keep their own small value. See SPEC.md 7.6.
 _THINKING_MAX_TOKENS = 1024
 
+# Generous budget for the hard-prompt degeneration probe: large enough that a
+# healthy model finishes a one-sentence answer well within it, so a run to
+# `finish_reason="length"` is the double-BOS runaway signature, not a tight budget.
+_HARD_MAX_TOKENS = 4096
+
 
 def test_core_health(client):
     """core-health: a basic completion returns non-empty content + usage."""
@@ -515,20 +520,40 @@ def test_core_bos_consistent_identity(client):
     )
 
 
-def test_core_no_degeneration(client):
-    """core-no-degeneration: a normal prompt produces coherent, non-degenerate text.
+def test_core_eos_not_appended_to_prompt(client):
+    """core-eos-not-appended: add_special_tokens=True must not append an EOS to a
+    raw prompt.
 
-    Config breakage (e.g. double-BOS) shows up as degeneration -- the output
-    collapses into one token/phrase repeated far past any natural limit. This is
-    the end-to-end effect that `core-no-double-bos` catches at the token level.
-    Structural heuristic (lenient, to avoid flagging legitimate repetition): no
-    word repeats >=6x consecutively, and no single word is >50% of the output.
+    The EOS-side mirror of the BOS ownership checks. A raw completion prompt is a
+    prefix the model continues from; a tokenizer misconfigured with
+    `add_eos_token=True` appends the EOS, so the model sees a premature stop token
+    mid-context -> truncated or degenerate continuations. Asserts the last token of
+    a raw `add_special_tokens=True` tokenization is not a control/EOS token. (The
+    thread noted #420 is BOS-only -- this pins that the EOS side stays clean too.)
     """
-    resp = client.chat(
-        [{"role": "user", "content": "Write two sentences about the ocean."}],
-        max_tokens=_THINKING_MAX_TOKENS,
+    try:
+        raw = client.tokenize(
+            "The capital of France is Paris", add_special_tokens=True
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    if not raw:
+        pytest.skip("could not tokenize")
+    try:
+        last = client.detokenize([raw[-1]])
+    except ApiError as exc:
+        pytest.skip(f"/detokenize not available: {exc}")
+    assert not _CONTROL_TOKEN_RE.search(last), (
+        f"add_special_tokens=True appended a control/EOS token {last!r} to a raw "
+        f"prompt (last ids {raw[-3:]}). A completion prompt must not end in an EOS -- "
+        f"the model would see a premature stop mid-context."
     )
-    content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
+
+
+def _assert_not_degenerate(content):
+    """Structural degeneration heuristic (lenient, to avoid flagging legitimate
+    repetition): no word repeats >=6x consecutively, and no single word is >50% of
+    the output. Skips when the answer is too short to assess."""
     words = content.split()
     if len(words) < 8:
         pytest.skip(f"answer too short to assess ({len(words)} words): {content!r}")
@@ -543,6 +568,56 @@ def test_core_no_degeneration(client):
     assert count / len(words) <= 0.5, (
         f"degenerate: {word!r} is {count}/{len(words)} of the output: {content[:200]!r}"
     )
+
+
+def test_core_no_degeneration(client):
+    """core-no-degeneration: a normal prompt produces coherent, non-degenerate text.
+
+    Config breakage (e.g. double-BOS) shows up as degeneration -- the output
+    collapses into one token/phrase repeated far past any natural limit. This is
+    the end-to-end effect that `core-no-double-bos` catches at the token level.
+    """
+    resp = client.chat(
+        [{"role": "user", "content": "Write two sentences about the ocean."}],
+        max_tokens=_THINKING_MAX_TOKENS,
+    )
+    content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
+    _assert_not_degenerate(content)
+
+
+def test_core_no_degeneration_hard(client):
+    """core-no-degeneration-hard: a hard prompt completes and stops, not runs away.
+
+    The behavioral signature of the double-BOS bug (apertus-program #420) showed up
+    only on *hard* prompts (medqa/math): the model ran to the token budget and never
+    emitted its stop token. `core-no-degeneration` uses an easy prompt and so misses
+    it; this uses a hard, bounded-answer clinical prompt with a generous budget and
+    asserts the model reaches a natural stop (`finish_reason="stop"`, not `"length"`)
+    and does not degenerate. This is the only end-to-end catch for the multimodal /
+    completion-path double-BOS that the `/tokenize` probes can only proxy. Answer
+    correctness is not asserted (the prompt is a vehicle, not a knowledge test); a
+    legitimately long answer that trips `finish_reason` can relax the budget.
+    """
+    resp = client.chat(
+        [
+            {
+                "role": "user",
+                "content": "A 45-year-old presents with sudden tearing chest pain "
+                "radiating to the back, unequal arm blood pressures, and a widened "
+                "mediastinum on chest X-ray. Give the single most likely diagnosis "
+                "in one short sentence.",
+            }
+        ],
+        max_tokens=_HARD_MAX_TOKENS,
+    )
+    finish = resp["choices"][0]["finish_reason"]
+    content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
+    assert finish == "stop", (
+        f"hard prompt ran to finish_reason={finish!r} (budget {_HARD_MAX_TOKENS}) "
+        f"without stopping -- the runaway signature of a double-BOS on the "
+        f"chat/mm generation path (apertus-program #420). Tail: {content[-200:]!r}"
+    )
+    _assert_not_degenerate(content)
 
 
 def test_core_multi_system(client):
