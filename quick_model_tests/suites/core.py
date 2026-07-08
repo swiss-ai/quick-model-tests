@@ -550,24 +550,35 @@ def test_core_eos_not_appended_to_prompt(client):
     )
 
 
-def _assert_not_degenerate(content):
+def _degeneration_reason(content):
     """Structural degeneration heuristic (lenient, to avoid flagging legitimate
-    repetition): no word repeats >=6x consecutively, and no single word is >50% of
-    the output. Skips when the answer is too short to assess."""
+    repetition): flag if a word repeats >=6x consecutively or a single word is >50%
+    of the output. Returns a failure message, or None when the output is clean --
+    including when it is too short (<8 words) to assess (a short answer is not
+    degenerate)."""
     words = content.split()
     if len(words) < 8:
-        pytest.skip(f"answer too short to assess ({len(words)} words): {content!r}")
+        return None
     max_run = run = 1
     for a, b in zip(words, words[1:]):
         run = run + 1 if a == b else 1
         max_run = max(max_run, run)
-    assert max_run < 6, (
-        f"degenerate: a word repeats {max_run}x consecutively: {content[:200]!r}"
-    )
+    if max_run >= 6:
+        return f"a word repeats {max_run}x consecutively: {content[:200]!r}"
     word, count = Counter(words).most_common(1)[0]
-    assert count / len(words) <= 0.5, (
-        f"degenerate: {word!r} is {count}/{len(words)} of the output: {content[:200]!r}"
-    )
+    if count / len(words) > 0.5:
+        return f"{word!r} is {count}/{len(words)} of the output: {content[:200]!r}"
+    return None
+
+
+def _assert_not_degenerate(content):
+    """Assert `content` is not degenerate. Skips when it is too short to assess --
+    used where the prompt is expected to produce enough text (e.g. "two
+    sentences")."""
+    if len(content.split()) < 8:
+        pytest.skip(f"answer too short to assess: {content!r}")
+    reason = _degeneration_reason(content)
+    assert reason is None, f"degenerate: {reason}"
 
 
 def test_core_no_degeneration(client):
@@ -617,7 +628,10 @@ def test_core_no_degeneration_hard(client):
         f"without stopping -- the runaway signature of a double-BOS on the "
         f"chat/mm generation path (apertus-program #420). Tail: {content[-200:]!r}"
     )
-    _assert_not_degenerate(content)
+    # A correct short answer that stopped is a pass -- reaching a natural stop IS
+    # the signal here; only flag if longer output is actually degenerate.
+    reason = _degeneration_reason(content)
+    assert reason is None, f"degenerate on hard prompt: {reason}"
 
 
 def test_core_multi_system(client):
