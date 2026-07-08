@@ -375,21 +375,12 @@ _BOS_TOKEN_RE = re.compile(
 )
 
 
-def test_core_bos_single_in_chat(client):
-    """core-bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
-
-    The *positive* companion to the double-BOS probes. Once the chat template is
-    the sole BOS owner (the fix for apertus-program #420), the tokenizer no longer
-    auto-prepends a BOS, so `_discover_bos` -- and every check that depends on it --
-    skips. This check instead reads the BOS straight from the rendered chat prompt
-    (the template emits it first), so it keeps *running* -- and stays green -- after
-    the fix, asserting the surviving invariant: when the chat prompt begins with a
-    BOS, there is exactly one, never two (the original bug). Model-agnostic: a chat
-    format whose first token is not a recognizable BOS -- whether a model with no
-    BOS (e.g. Qwen) or a regression that dropped it -- skips rather than failing, so
-    this is a guard against re-doubling, not against a zero-BOS over-correction
-    (which `core-no-degeneration` would surface instead).
-    """
+def _discover_bos_from_chat(client):
+    """Return ``(bos_id, bos_str, chat_ids)`` where the BOS is read from a rendered
+    chat prompt -- the chat template emits it first -- so this works even when the
+    tokenizer no longer auto-prepends a BOS (unlike ``_discover_bos``). Skips if the
+    chat form / detokenize is unavailable, or if the prompt's first token is not a
+    recognizable BOS (a model with no BOS, e.g. Qwen)."""
     try:
         ids = client.tokenize_chat([{"role": "user", "content": "Paris"}])
     except ApiError as exc:
@@ -405,12 +396,74 @@ def test_core_bos_single_in_chat(client):
             f"chat prompt does not begin with a recognizable BOS ({bos_str!r}); "
             f"model's chat format carries no leading BOS"
         )
-    count = _leading_bos_count(ids, ids[0])
+    return ids[0], bos_str, ids
+
+
+def test_core_bos_single_in_chat(client):
+    """core-bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
+
+    The *positive* companion to the double-BOS probes. Once the chat template is
+    the sole BOS owner (the fix for apertus-program #420), the tokenizer no longer
+    auto-prepends a BOS, so `_discover_bos` -- and every check that depends on it --
+    skips. This check instead reads the BOS straight from the rendered chat prompt
+    (the template emits it first), so it keeps *running* -- and stays green -- after
+    the fix, asserting the surviving invariant: when the chat prompt begins with a
+    BOS, there is exactly one, never two (the original bug). Model-agnostic: a chat
+    format whose first token is not a recognizable BOS -- whether a model with no
+    BOS (e.g. Qwen) or a regression that dropped it -- skips rather than failing, so
+    this is a guard against re-doubling, not against a zero-BOS over-correction
+    (which `core-bos-single-in-completion` and `core-no-degeneration` surface).
+    """
+    bos_id, bos_str, ids = _discover_bos_from_chat(client)
+    count = _leading_bos_count(ids, bos_id)
     assert count == 1, (
         f"chat prompt must begin with exactly one BOS, got {count} leading "
         f"{bos_str!r} (first ids {ids[:6]}). Two means the double-BOS regression "
         f"is back -- the chat template must be the sole BOS owner "
         f"(apertus-program #420)."
+    )
+
+
+def test_core_bos_single_in_completion(client):
+    """core-bos-single-in-completion: the raw (non-chat) tokenization path supplies
+    exactly one BOS.
+
+    Guards the OTHER side of BOS ownership. `/completions`, offline
+    `generate`, and lm-eval loglikelihood tasks never invoke the chat template;
+    they tokenize raw text with `add_special_tokens=True` and rely on the tokenizer
+    to supply the BOS the model was pretrained with (the attention-sink first
+    token). This check discovers the model's BOS from the chat template, then
+    asserts a raw `add_special_tokens=True` tokenization begins with exactly one
+    of it -- never zero, never two.
+
+    Zero is the failure mode of an over-correction that makes the template the
+    *sole* BOS owner (e.g. stripping the tokenizer's post-processor BOS): chat is
+    fixed, but the completion/eval paths lose their BOS -> train/inference mismatch
+    (apertus-program #420 discussion). Two is the original double-BOS. Skips for
+    models with no BOS.
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    try:
+        raw = client.tokenize(
+            "The capital of France is Paris.", add_special_tokens=True
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    count = _leading_bos_count(raw, bos_id)
+    detail = (
+        "0 means the tokenizer no longer prepends the BOS the model was pretrained "
+        "with -- raw /completions and lm-eval loglikelihood paths now mismatch the "
+        "training format (attention-sink token missing). "
+        if count == 0
+        else "2 means a double-BOS. "
+        if count > 1
+        else ""
+    )
+    assert count == 1, (
+        f"raw tokenization (add_special_tokens=True) must supply exactly one BOS "
+        f"(id {bos_id}, {bos_str!r}); got {count} (first ids {raw[:6]}). {detail}"
+        f"The chat template and add_special_tokens are each authoritative for "
+        f"different paths -- keep the completion path's BOS (apertus-program #420)."
     )
 
 
