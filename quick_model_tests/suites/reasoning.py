@@ -281,6 +281,112 @@ def test_reason_tools(client, reasoning_supported):
         ), f"tool/boundary scaffolding {leak.group(0)!r} leaked into {name}"
 
 
+# An agentic system prompt plus an offered tool is the shape that provoked the
+# non-think leak in the wild: a large IronClaw-style system prompt with tool
+# definitions drove the non-think 8B model to emit a full
+# `<|inner_prefix|>...<|inner_suffix|>` deliberation block into `content`, even
+# though the deployment renders "Deliberation: disabled" (Apertus 1.5
+# chat_template.jinja lines 181-186 -- non-think is signalled by that developer
+# line, NOT by a prefilled inner block; the generation prompt is a bare
+# `<|assistant_start|>`). The benign prompts in reason-separation /
+# core-template-no-leak don't reproduce it -- the tools + system-prompt shape does.
+_AGENTIC_SYSTEM = (
+    "You are a secure autonomous assistant. Be concise and direct. Call tools "
+    "when they would help accomplish the task. Respond directly with your final "
+    "answer -- do not wrap it in any special tags or narrate your reasoning."
+)
+
+
+def test_reason_nothink_no_inner_leak(client):
+    """reason-nothink-no-inner-leak: with thinking disabled, no deliberation
+    delimiters may reach `content` -- even under an agentic system prompt with
+    tools offered.
+
+    Regression guard for the observed non-think leak: a deployment launched
+    non-think (`enable_thinking=false` -> template renders "Deliberation:
+    disabled") still emitted a `<|inner_prefix|>...<|inner_suffix|>` block into
+    `content` when driven with a large agentic system prompt + tool definitions.
+    A non-think turn must go straight to the answer with no inner block.
+
+    Deliberately NOT gated on the `reasoning_supported` probe: that fixture skips
+    exactly the non-think endpoints this check targets. Forces
+    `enable_thinking=false` and `skip_special_tokens=false` so the delimiters, if
+    emitted, are visible rather than silently stripped; skips if the endpoint
+    rejects either override. The assertion is mode-agnostic and stays valid even
+    if the endpoint ignores the toggle and keeps thinking: a wired reasoning
+    parser routes the block to `reasoning_content`, leaving `content` clean --
+    only a genuine leak into `content` fails it.
+    """
+    try:
+        resp = client.chat(
+            [
+                {"role": "system", "content": _AGENTIC_SYSTEM},
+                {"role": "user", "content": REASONING_PROMPT},
+            ],
+            tools=[WEATHER_TOOL],
+            max_tokens=REASON_MAX_TOKENS,
+            extra={
+                "chat_template_kwargs": {"enable_thinking": False},
+                "skip_special_tokens": False,
+            },
+        )
+    except ApiError as exc:
+        pytest.skip(f"endpoint rejected enable_thinking / skip_special_tokens: {exc}")
+
+    content = ChatClient.content(resp) or ""
+    leak = next((d for d in _REASON_DELIMS if d in content), None)
+    assert not leak, (
+        f"non-think deliberation leaked into content: the model emitted {leak!r} "
+        f"with enable_thinking=false, so an inner-reasoning block reached `content` "
+        f"instead of the turn going straight to the answer. This is the non-think "
+        f"deployment emitting a deliberation block it should have skipped "
+        f"(chat_template 'Deliberation: disabled'). content[:200]={content[:200]!r}"
+    )
+
+
+def test_reason_nothink_no_inner_leak_sampled(client):
+    """reason-nothink-no-inner-leak-sampled: the temp>0 version of the guard above.
+
+    The greedy (temp=0) check passes even on a leaky non-think endpoint, because
+    the leak is a SAMPLING event: at temperature>0 the model occasionally draws
+    `<|inner_prefix|>` despite "Deliberation: disabled", and with no reasoning
+    parser on the non-think endpoint that block leaks raw into `content`. This is
+    exactly the shape observed in the wild (temperature 0.7, agentic system
+    prompt, tools offered).
+
+    Probabilistic by nature: draws `_SAMPLES` completions at temperature 0.7 and
+    fails if ANY carries an inner delimiter in `content`. A pass is not a proof of
+    absence (the leak may be rarer than the sample budget), but a fail is a solid
+    positive. Skips if the endpoint rejects the overrides.
+    """
+    _SAMPLES = 8
+    for i in range(_SAMPLES):
+        try:
+            resp = client.chat(
+                [
+                    {"role": "system", "content": _AGENTIC_SYSTEM},
+                    {"role": "user", "content": REASONING_PROMPT},
+                ],
+                tools=[WEATHER_TOOL],
+                max_tokens=REASON_MAX_TOKENS,
+                temperature=0.7,
+                extra={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "skip_special_tokens": False,
+                },
+            )
+        except ApiError as exc:
+            pytest.skip(f"endpoint rejected enable_thinking / skip_special_tokens: {exc}")
+        content = ChatClient.content(resp) or ""
+        leak = next((d for d in _REASON_DELIMS if d in content), None)
+        assert not leak, (
+            f"non-think deliberation leaked into content on sample {i + 1}/{_SAMPLES} "
+            f"(temperature=0.7): the model emitted {leak!r} with enable_thinking=false, "
+            f"so an inner-reasoning block reached `content`. content[:200]="
+            f"{content[:200]!r}"
+        )
+
+
 def test_reason_disabled(client, reasoning_supported):
     """reason-disabled: the parser respects the think toggle.
 

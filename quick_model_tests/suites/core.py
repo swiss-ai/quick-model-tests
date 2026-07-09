@@ -39,6 +39,11 @@ _CONTROL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?s>|\[/?INST\]|</?think\b", re.IG
 # budget (core-maxtokens, core-usage) keep their own small value. See SPEC.md 7.6.
 _THINKING_MAX_TOKENS = 1024
 
+# Generous budget for the hard-prompt degeneration probe: large enough that a
+# healthy model finishes a one-sentence answer well within it, so a run to
+# `finish_reason="length"` is the double-BOS runaway signature, not a tight budget.
+_HARD_MAX_TOKENS = 4096
+
 
 def test_core_health(client):
     """core-health: a basic completion returns non-empty content + usage."""
@@ -280,34 +285,353 @@ def test_core_bos_single_token(client):
     )
 
 
+def _discover_bos(client):
+    """Return the model's BOS id, or skip if it has none / tokenizer is absent.
+
+    The BOS is the id that ``add_special_tokens=True`` prepends and
+    ``add_special_tokens=False`` does not. If they agree, the model auto-prepends
+    nothing (e.g. Qwen has no BOS) and double-BOS is impossible."""
+    try:
+        with_special = client.tokenize("Paris", add_special_tokens=True)
+        without_special = client.tokenize("Paris", add_special_tokens=False)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    if not with_special or with_special == without_special:
+        pytest.skip("model does not auto-prepend a BOS (double-BOS not possible)")
+    return with_special[0]
+
+
+def _leading_bos_count(ids, bos_id):
+    """How many BOS ids the sequence starts with (0, 1, or more)."""
+    n = 0
+    for t in ids:
+        if t == bos_id:
+            n += 1
+        else:
+            break
+    return n
+
+
+def test_core_no_double_bos_chat(client):
+    """core-no-double-bos-chat: the /chat tokenization path must not add a 2nd BOS
+    on top of the template's own.
+
+    This is the path the bug was reported on (apertus-program #420): the chat
+    template emits `{{ bos_token }}`, so the rendered chat prompt already starts
+    with `<s>`. If the server then tokenizes that rendered string with
+    `add_special_tokens=True` -- which the Apertus multimodal path restores via
+    `mm_processor.info.default_tok_params` -- the prompt begins `<s><s>...` ->
+    degeneration. `core-no-double-bos` probes the same fault on /completions with a
+    hand-crafted prompt; this probes the real chat path a chat client hits, by
+    asking /tokenize to apply the server's own template.
+    """
+    bos_id = _discover_bos(client)
+    try:
+        ids = client.tokenize_chat(
+            [{"role": "user", "content": "The capital of France is Paris."}]
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+    if not ids:
+        pytest.skip("chat tokenization returned no tokens")
+    leading = _leading_bos_count(ids, bos_id)
+    assert leading <= 1, (
+        f"double-BOS on the chat path: the server applied its chat template (which "
+        f"emits the BOS) and then tokenized with add_special_tokens=True, so the "
+        f"prompt starts with {leading} BOS tokens (id {bos_id}, first ids "
+        f"{ids[:6]}) -> `<s><s>...` -> degeneration (apertus-program #420)."
+    )
+
+
+def test_core_no_double_bos_tokenize(client):
+    """core-no-double-bos-tokenize: /tokenize must not add a 2nd BOS to a string
+    that already begins with the BOS.
+
+    Same fault as `core-no-double-bos`, but observed through `/tokenize` instead of
+    `/completions` `prompt_logprobs`, so the check still fires on gateways that
+    expose one endpoint but not the other. Prefixes the BOS string onto a prompt
+    (mimicking an already-rendered chat template), tokenizes with
+    `add_special_tokens=True`, and asserts the result does not start with two BOS.
+    """
+    bos_id = _discover_bos(client)
+    try:
+        bos_str = client.detokenize([bos_id])
+        ids = client.tokenize(
+            f"{bos_str}The capital of France is Paris.", add_special_tokens=True
+        )
+    except ApiError as exc:
+        pytest.skip(f"/detokenize not available: {exc}")
+    assert _leading_bos_count(ids, bos_id) <= 1, (
+        f"double-BOS on /tokenize: a {bos_str!r}-prefixed prompt tokenized to two "
+        f"leading BOS tokens (id {bos_id}, first ids {ids[:6]}). A client posting a "
+        f"chat-templated prompt gets `{bos_str}{bos_str}...` -> degeneration "
+        f"(apertus-program #420)."
+    )
+
+
+# Recognizable start-of-sequence tokens across model families. Used to identify
+# the BOS from a rendered chat prompt WITHOUT relying on the tokenizer
+# auto-prepending it -- after a template-owns fix (apertus-program #420) the
+# tokenizer no longer adds a BOS, but the chat template still emits one as the
+# rendered prompt's first token.
+_BOS_TOKEN_RE = re.compile(
+    r"^\s*(?:<s>|<\|begin_of_text\|>|<\|startoftext\|>|<bos>|\[BOS\]|"
+    r"<\|begin▁of▁sentence\|>)\s*$"
+)
+
+
+def _discover_bos_from_chat(client):
+    """Return ``(bos_id, bos_str, chat_ids)`` where the BOS is read from a rendered
+    chat prompt -- the chat template emits it first -- so this works even when the
+    tokenizer no longer auto-prepends a BOS (unlike ``_discover_bos``). Skips if the
+    chat form / detokenize is unavailable, or if the prompt's first token is not a
+    recognizable BOS (a model with no BOS, e.g. Qwen)."""
+    try:
+        ids = client.tokenize_chat([{"role": "user", "content": "Paris"}])
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+    if len(ids) < 2:
+        pytest.skip("chat tokenization returned too few tokens")
+    try:
+        bos_str = client.detokenize([ids[0]])
+    except ApiError as exc:
+        pytest.skip(f"/detokenize not available: {exc}")
+    if not _BOS_TOKEN_RE.match(bos_str):
+        pytest.skip(
+            f"chat prompt does not begin with a recognizable BOS ({bos_str!r}); "
+            f"model's chat format carries no leading BOS"
+        )
+    return ids[0], bos_str, ids
+
+
+def test_core_bos_single_in_chat(client):
+    """core-bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
+
+    The *positive* companion to the double-BOS probes. Once the chat template is
+    the sole BOS owner (the fix for apertus-program #420), the tokenizer no longer
+    auto-prepends a BOS, so `_discover_bos` -- and every check that depends on it --
+    skips. This check instead reads the BOS straight from the rendered chat prompt
+    (the template emits it first), so it keeps *running* -- and stays green -- after
+    the fix, asserting the surviving invariant: when the chat prompt begins with a
+    BOS, there is exactly one, never two (the original bug). Model-agnostic: a chat
+    format whose first token is not a recognizable BOS -- whether a model with no
+    BOS (e.g. Qwen) or a regression that dropped it -- skips rather than failing, so
+    this is a guard against re-doubling, not against a zero-BOS over-correction
+    (which `core-bos-single-in-completion` and `core-no-degeneration` surface).
+    """
+    bos_id, bos_str, ids = _discover_bos_from_chat(client)
+    count = _leading_bos_count(ids, bos_id)
+    assert count == 1, (
+        f"chat prompt must begin with exactly one BOS, got {count} leading "
+        f"{bos_str!r} (first ids {ids[:6]}). Two means the double-BOS regression "
+        f"is back -- the chat template must be the sole BOS owner "
+        f"(apertus-program #420)."
+    )
+
+
+def test_core_bos_single_in_completion(client):
+    """core-bos-single-in-completion: the raw (non-chat) tokenization path supplies
+    exactly one BOS.
+
+    Guards the OTHER side of BOS ownership. `/completions`, offline
+    `generate`, and lm-eval loglikelihood tasks never invoke the chat template;
+    they tokenize raw text with `add_special_tokens=True` and rely on the tokenizer
+    to supply the BOS the model was pretrained with (the attention-sink first
+    token). This check discovers the model's BOS from the chat template, then
+    asserts a raw `add_special_tokens=True` tokenization begins with exactly one
+    of it -- never zero, never two.
+
+    Zero is the failure mode of an over-correction that makes the template the
+    *sole* BOS owner (e.g. stripping the tokenizer's post-processor BOS): chat is
+    fixed, but the completion/eval paths lose their BOS -> train/inference mismatch
+    (apertus-program #420 discussion). Two is the original double-BOS. Skips for
+    models with no BOS.
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    try:
+        raw = client.tokenize(
+            "The capital of France is Paris.", add_special_tokens=True
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    count = _leading_bos_count(raw, bos_id)
+    detail = (
+        "0 means the tokenizer no longer prepends the BOS the model was pretrained "
+        "with -- raw /completions and lm-eval loglikelihood paths now mismatch the "
+        "training format (attention-sink token missing). "
+        if count == 0
+        else "2 means a double-BOS. "
+        if count > 1
+        else ""
+    )
+    assert count == 1, (
+        f"raw tokenization (add_special_tokens=True) must supply exactly one BOS "
+        f"(id {bos_id}, {bos_str!r}); got {count} (first ids {raw[:6]}). {detail}"
+        f"The chat template and add_special_tokens are each authoritative for "
+        f"different paths -- keep the completion path's BOS (apertus-program #420)."
+    )
+
+
+def test_core_bos_absent_without_specials(client):
+    """core-bos-absent-without-specials: add_special_tokens=False prepends no BOS.
+
+    The escape hatch that lets a caller which supplies its own BOS -- e.g. posting
+    an already-rendered chat template -- avoid a double: with
+    `add_special_tokens=False` the tokenizer must add nothing. Discovers the BOS
+    from the chat template, then asserts a plain `add_special_tokens=False`
+    tokenization does not begin with it. Skips for models with no BOS.
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    try:
+        raw = client.tokenize(
+            "The capital of France is Paris.", add_special_tokens=False
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    assert not raw or raw[0] != bos_id, (
+        f"add_special_tokens=False still prepended the BOS (id {bos_id}, "
+        f"{bos_str!r}); first ids {raw[:6]}. The no-specials path must be clean so a "
+        f"client supplying its own BOS is not doubled (apertus-program #420)."
+    )
+
+
+def test_core_bos_consistent_identity(client):
+    """core-bos-consistent-identity: the chat and raw paths agree on the BOS token.
+
+    The BOS the chat template emits must be the same id the tokenizer prepends on
+    the raw `add_special_tokens=True` path -- otherwise the two paths feed the model
+    different 'start' tokens. Only checked when the raw path actually prepends a BOS
+    (skips on the over-corrected config with no raw-path BOS, which
+    `core-bos-single-in-completion` already flags).
+    """
+    bos_id, bos_str, _ = _discover_bos_from_chat(client)
+    try:
+        with_special = client.tokenize("Paris", add_special_tokens=True)
+        without_special = client.tokenize("Paris", add_special_tokens=False)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    if not with_special or with_special == without_special:
+        pytest.skip("raw path prepends no BOS (see core-bos-single-in-completion)")
+    assert with_special[0] == bos_id, (
+        f"BOS identity mismatch: the chat template emits id {bos_id} ({bos_str!r}) "
+        f"but the raw add_special_tokens=True path prepends id {with_special[0]}. "
+        f"Both paths must feed the model the same BOS it was trained with "
+        f"(apertus-program #420)."
+    )
+
+
+def test_core_eos_not_appended_to_prompt(client):
+    """core-eos-not-appended: add_special_tokens=True must not append an EOS to a
+    raw prompt.
+
+    The EOS-side mirror of the BOS ownership checks. A raw completion prompt is a
+    prefix the model continues from; a tokenizer misconfigured with
+    `add_eos_token=True` appends the EOS, so the model sees a premature stop token
+    mid-context -> truncated or degenerate continuations. Asserts the last token of
+    a raw `add_special_tokens=True` tokenization is not a control/EOS token. (The
+    thread noted #420 is BOS-only -- this pins that the EOS side stays clean too.)
+    """
+    try:
+        raw = client.tokenize(
+            "The capital of France is Paris", add_special_tokens=True
+        )
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    if not raw:
+        pytest.skip("could not tokenize")
+    try:
+        last = client.detokenize([raw[-1]])
+    except ApiError as exc:
+        pytest.skip(f"/detokenize not available: {exc}")
+    assert not _CONTROL_TOKEN_RE.search(last), (
+        f"add_special_tokens=True appended a control/EOS token {last!r} to a raw "
+        f"prompt (last ids {raw[-3:]}). A completion prompt must not end in an EOS -- "
+        f"the model would see a premature stop mid-context."
+    )
+
+
+def _degeneration_reason(content):
+    """Structural degeneration heuristic (lenient, to avoid flagging legitimate
+    repetition): flag if a word repeats >=6x consecutively or a single word is >50%
+    of the output. Returns a failure message, or None when the output is clean --
+    including when it is too short (<8 words) to assess (a short answer is not
+    degenerate)."""
+    words = content.split()
+    if len(words) < 8:
+        return None
+    max_run = run = 1
+    for a, b in zip(words, words[1:]):
+        run = run + 1 if a == b else 1
+        max_run = max(max_run, run)
+    if max_run >= 6:
+        return f"a word repeats {max_run}x consecutively: {content[:200]!r}"
+    word, count = Counter(words).most_common(1)[0]
+    if count / len(words) > 0.5:
+        return f"{word!r} is {count}/{len(words)} of the output: {content[:200]!r}"
+    return None
+
+
+def _assert_not_degenerate(content):
+    """Assert `content` is not degenerate. Skips when it is too short to assess --
+    used where the prompt is expected to produce enough text (e.g. "two
+    sentences")."""
+    if len(content.split()) < 8:
+        pytest.skip(f"answer too short to assess: {content!r}")
+    reason = _degeneration_reason(content)
+    assert reason is None, f"degenerate: {reason}"
+
+
 def test_core_no_degeneration(client):
     """core-no-degeneration: a normal prompt produces coherent, non-degenerate text.
 
     Config breakage (e.g. double-BOS) shows up as degeneration -- the output
     collapses into one token/phrase repeated far past any natural limit. This is
     the end-to-end effect that `core-no-double-bos` catches at the token level.
-    Structural heuristic (lenient, to avoid flagging legitimate repetition): no
-    word repeats >=6x consecutively, and no single word is >50% of the output.
     """
     resp = client.chat(
         [{"role": "user", "content": "Write two sentences about the ocean."}],
         max_tokens=_THINKING_MAX_TOKENS,
     )
     content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
-    words = content.split()
-    if len(words) < 8:
-        pytest.skip(f"answer too short to assess ({len(words)} words): {content!r}")
-    max_run = run = 1
-    for a, b in zip(words, words[1:]):
-        run = run + 1 if a == b else 1
-        max_run = max(max_run, run)
-    assert max_run < 6, (
-        f"degenerate: a word repeats {max_run}x consecutively: {content[:200]!r}"
+    _assert_not_degenerate(content)
+
+
+def test_core_no_degeneration_hard(client):
+    """core-no-degeneration-hard: a hard prompt completes and stops, not runs away.
+
+    The behavioral signature of the double-BOS bug (apertus-program #420) showed up
+    only on *hard* prompts (medqa/math): the model ran to the token budget and never
+    emitted its stop token. `core-no-degeneration` uses an easy prompt and so misses
+    it; this uses a hard, bounded-answer clinical prompt with a generous budget and
+    asserts the model reaches a natural stop (`finish_reason="stop"`, not `"length"`)
+    and does not degenerate. This is the only end-to-end catch for the multimodal /
+    completion-path double-BOS that the `/tokenize` probes can only proxy. Answer
+    correctness is not asserted (the prompt is a vehicle, not a knowledge test); a
+    legitimately long answer that trips `finish_reason` can relax the budget.
+    """
+    resp = client.chat(
+        [
+            {
+                "role": "user",
+                "content": "A 45-year-old presents with sudden tearing chest pain "
+                "radiating to the back, unequal arm blood pressures, and a widened "
+                "mediastinum on chest X-ray. Give the single most likely diagnosis "
+                "in one short sentence.",
+            }
+        ],
+        max_tokens=_HARD_MAX_TOKENS,
     )
-    word, count = Counter(words).most_common(1)[0]
-    assert count / len(words) <= 0.5, (
-        f"degenerate: {word!r} is {count}/{len(words)} of the output: {content[:200]!r}"
+    finish = resp["choices"][0]["finish_reason"]
+    content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
+    assert finish == "stop", (
+        f"hard prompt ran to finish_reason={finish!r} (budget {_HARD_MAX_TOKENS}) "
+        f"without stopping -- the runaway signature of a double-BOS on the "
+        f"chat/mm generation path (apertus-program #420). Tail: {content[-200:]!r}"
     )
+    # A correct short answer that stopped is a pass -- reaching a natural stop IS
+    # the signal here; only flag if longer output is actually degenerate.
+    reason = _degeneration_reason(content)
+    assert reason is None, f"degenerate on hard prompt: {reason}"
 
 
 def test_core_multi_system(client):
