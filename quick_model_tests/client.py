@@ -88,13 +88,16 @@ class ChatClient:
             payload.update(extra)
         return payload
 
-    def raw(self, payload: dict, *, stream: bool = False) -> requests.Response:
-        """Escape hatch for error-path / malformed-request tests."""
-        recording.record("input", json.dumps(payload, indent=2, ensure_ascii=False))
+    def _post(self, path: str, body: dict, *, stream: bool = False) -> requests.Response:
+        """POST ``body`` to ``path``, recording the request and (non-stream)
+        response so every endpoint the suite touches -- /tokenize, /detokenize,
+        /completions -- shows up under ``--record-responses``, not just
+        /chat/completions."""
+        recording.record("input", json.dumps(body, indent=2, ensure_ascii=False))
         resp = requests.post(
-            f"{self.config.api_base}/chat/completions",
+            f"{self.config.api_base}{path}",
             headers=self._headers(),
-            json=payload,
+            json=body,
             stream=stream,
             timeout=self.config.timeout,
         )
@@ -107,6 +110,10 @@ class ChatClient:
             # (client.stream() OR a test iterating raw() directly) drains it.
             _record_iter_lines(resp)
         return resp
+
+    def raw(self, payload: dict, *, stream: bool = False) -> requests.Response:
+        """Escape hatch for error-path / malformed-request tests."""
+        return self._post("/chat/completions", payload, stream=stream)
 
     def chat(self, messages, **kw) -> dict:
         resp = self.raw(self._payload(messages, stream=False, **kw))
@@ -143,12 +150,7 @@ class ChatClient:
             "temperature": 0,
             "prompt_logprobs": 0,
         }
-        resp = requests.post(
-            f"{self.config.api_base}/completions",
-            headers=self._headers(),
-            json=body,
-            timeout=self.config.timeout,
-        )
+        resp = self._post("/completions", body)
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)
         pl = resp.json()["choices"][0].get("prompt_logprobs")
@@ -158,15 +160,13 @@ class ChatClient:
 
     def tokenize(self, prompt: str, add_special_tokens: bool = True) -> list:
         """Token ids for ``prompt`` via the ``/tokenize`` endpoint."""
-        resp = requests.post(
-            f"{self.config.api_base}/tokenize",
-            headers=self._headers(),
-            json={
+        resp = self._post(
+            "/tokenize",
+            {
                 "model": self.config.model,
                 "prompt": prompt,
                 "add_special_tokens": add_special_tokens,
             },
-            timeout=self.config.timeout,
         )
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)
@@ -180,15 +180,13 @@ class ChatClient:
         server also tokenizes with ``add_special_tokens=True`` the prompt starts
         ``<s><s>...``. ``add_special_tokens`` is deliberately NOT sent, so the
         result reflects the server's own default for chat tokenization."""
-        resp = requests.post(
-            f"{self.config.api_base}/tokenize",
-            headers=self._headers(),
-            json={
+        resp = self._post(
+            "/tokenize",
+            {
                 "model": self.config.model,
                 "messages": messages,
                 "add_generation_prompt": add_generation_prompt,
             },
-            timeout=self.config.timeout,
         )
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)
@@ -196,12 +194,7 @@ class ChatClient:
 
     def detokenize(self, tokens: list) -> str:
         """Text for ``tokens`` via the ``/detokenize`` endpoint."""
-        resp = requests.post(
-            f"{self.config.api_base}/detokenize",
-            headers=self._headers(),
-            json={"model": self.config.model, "tokens": tokens},
-            timeout=self.config.timeout,
-        )
+        resp = self._post("/detokenize", {"model": self.config.model, "tokens": tokens})
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)
         return resp.json()["prompt"]
