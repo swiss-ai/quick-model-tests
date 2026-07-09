@@ -158,16 +158,18 @@ class ChatClient:
             raise ApiError(resp.status_code, "endpoint returned no prompt_logprobs")
         return [int(next(iter(e))) if e else None for e in pl[:n]]
 
-    def tokenize(self, prompt: str, add_special_tokens: bool = True) -> list:
-        """Token ids for ``prompt`` via the ``/tokenize`` endpoint."""
-        resp = self._post(
-            "/tokenize",
-            {
-                "model": self.config.model,
-                "prompt": prompt,
-                "add_special_tokens": add_special_tokens,
-            },
-        )
+    def tokenize(self, prompt: str, add_special_tokens: Optional[bool] = None) -> list:
+        """Token ids for ``prompt`` via the ``/tokenize`` endpoint.
+
+        By default ``add_special_tokens`` is NOT sent, so the result reflects the
+        server's own default -- the behavior every client that doesn't override
+        the flag actually gets, and what the BOS checks are meant to probe (same
+        rationale as ``tokenize_chat``). Pass True/False explicitly only where a
+        test is about the flag itself (e.g. the no-specials round-trip checks)."""
+        body = {"model": self.config.model, "prompt": prompt}
+        if add_special_tokens is not None:
+            body["add_special_tokens"] = add_special_tokens
+        resp = self._post("/tokenize", body)
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)
         return resp.json()["tokens"]
