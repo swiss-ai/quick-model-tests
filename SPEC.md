@@ -178,13 +178,21 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 
 ### 7.2 `special_tokens` — BOS/EOS ownership
 
-Every check here is **token-level**: it reads back what the server tokenized (via
-`/tokenize`, `/detokenize`, or `/completions` `prompt_logprobs`) and asserts an
-invariant about the special tokens at the prompt's edges. Requests use the
-server's DEFAULT tokenization — `add_special_tokens` is not sent — since that is
-what a client which doesn't override it actually gets. All checks are
-**model-agnostic**: the BOS is discovered from a rendered chat prompt (the
-template emits it first), and a model with no BOS (e.g. Qwen) skips.
+Mostly **token-level**: read back what the server tokenized (via `/tokenize`,
+`/detokenize`, or `/completions` `prompt_logprobs`) and assert an invariant about
+the special tokens at the prompt's edges. **No request in this suite sends
+`add_special_tokens`** — every check reads the server's DEFAULT tokenization, since
+the default is what a client that doesn't override the flag actually gets, and it is
+the only behavior the server is answerable for. The per-endpoint defaults are
+therefore what these checks really probe:
+
+| | chat form | completion form |
+|---|---|---|
+| `/tokenize` | `False` | `True` |
+| generation | `/chat/completions` → `False` | `/completions` → `True` |
+
+All checks are **model-agnostic**: the BOS is discovered from a rendered chat prompt
+(the template emits it first), and a model with no BOS (e.g. Qwen) skips.
 
 > Background (apertus-program #420, raised by the SML eval team on vLLM 0.19):
 > a chat template that hardcodes `{{ bos_token }}` plus a server that also
@@ -228,10 +236,7 @@ template emits it first), and a model with no BOS (e.g. Qwen) skips.
 | bos-rendered-prompt-stops | **#420 reproduction, behavioral.** The symptom the issue reported, text-only. Sends `core._HARD_PROMPT` rendered through the template to `/completions` twice with the same budget: control `add_special_tokens=False` (1 BOS), subject = server default (2 BOS). Skips if the control cannot stop either, so a failure is attributable to the BOS alone | subject reaches `finish_reason="stop"` and is not degenerate. **Expected RED** — mirrors the issue's medqa doc-231 evidence (2 BOS → runs to length, never emits `<\|assistant_end\|>`) |
 | bos-single-in-raw-tokenize | raw path, via `/tokenize`: tokenizer owns the BOS | raw DEFAULT tokenization starts with exactly 1 BOS — 0 is the over-correction, 2 the original bug |
 | bos-single-in-completions | same invariant on the `/completions` DEFAULT (the endpoint that generates; a gateway may default differently than `/tokenize`). `prompt_logprobs` hides position 0, so anchor on the content: take the DEFAULT `/tokenize` of the same prompt and drop its leading BOS to get the body, then see where `body[0]` lands | `ids[1] == body[0]` → exactly 1 BOS. `ids[1] == bos_id` → doubled. `ids[1] == body[1]` → no BOS (lm-eval loglikelihood loses the attention-sink token) |
-| bos-flag-invariant | **acceptance test for the durable fix.** apertus-omni-tokenizer#18 claims "exactly one BOS … *independent of `add_special_tokens`*". Tokenizes the server-rendered chat prompt with default / `True` / `False` | exactly 1 leading BOS on all three. **RED today** (`False`→1, `True`→2): the flag is the only thing between a caller and #420, i.e. the per-call-site mitigation the issue rejects. GREEN once a single owner exists |
-| bos-chat-render-roundtrip | the mitigation the issue prescribes actually reproduces the training render | `tokenize(detokenize(tokenize_chat(m)), add_special_tokens=False) == tokenize_chat(m)`. A mismatch means a client doing exactly what #420 says still doesn't reproduce the chat ids (lossy round-trip) |
 | bos-generation-matches-tokenize | **closes the proxy gap.** Every other probe reads `/tokenize`, which need not traverse the generation path — the doubling lives in the *renderer* (`default_tok_params`). `usage.prompt_tokens` from a real chat call is the only observable count of what the model consumed | `usage.prompt_tokens == len(tokenize_chat(m))`. Off-by-one = double-BOS present in **generation** but not in `/tokenize` (or vice versa). Text-only: mm `prompt_tokens` includes vision-placeholder expansion |
-| bos-absent-without-specials | the escape hatch works: `add_special_tokens=False` prepends no BOS. Why the text-only chat path isn't already broken (vLLM tokenizes it with the flag off) | 0 leading BOS on a plain prompt. Green before *and* after a single-owner fix — fails only if the server ignores the flag, the one way the mitigation silently stops working |
 | bos-single-token | the BOS *string* encodes to one BOS token. Also the only check that feeds the default an already-rendered (BOS-prefixed) prompt, so it pins the server's behavior on the #420 path: the default adds its own BOS on top of the caller's, deterministically and by design | `tokenize(bos + text) == [bos_id] + tokenize(text)`; a split means template/tokenizer disagree |
 | bos-consistent-identity | chat and raw paths agree | same BOS id from both. Skips when the raw path prepends no BOS (`bos-single-in-raw-tokenize` flags that) |
 | bos-single-in-mm-chat | image+text chat prompt — the exact mm path #420 was reported on (vLLM restores `add_special_tokens=True` via `default_tok_params`) | exactly 1 leading BOS |

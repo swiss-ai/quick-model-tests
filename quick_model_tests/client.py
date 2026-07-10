@@ -135,29 +135,20 @@ class ChatClient:
             yield json.loads(data)
 
     def complete(
-        self,
-        prompt: str,
-        *,
-        max_tokens: int,
-        add_special_tokens: Optional[bool] = None,
-        temperature: float = 0.0,
+        self, prompt: str, *, max_tokens: int, temperature: float = 0.0
     ) -> dict:
         """Generate from a raw ``/v1/completions`` prompt (no chat template applied).
 
         The path OpenWebUI and lm-eval hit: the CALLER renders the chat template and
-        posts the resulting string. vLLM defaults ``add_special_tokens=True`` on the
-        completion path, so a rendered prompt (which already starts with the
-        template's BOS) is re-encoded with a second one -- apertus-program #420.
-        ``add_special_tokens`` is only sent when given, so the default reflects the
-        server's own behavior."""
+        posts the resulting string. ``add_special_tokens`` is deliberately never sent,
+        so the result reflects the server's own default -- what the BOS checks are
+        meant to probe (same rationale as ``tokenize_chat``)."""
         body = {
             "model": self.config.model,
             "prompt": prompt,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if add_special_tokens is not None:
-            body["add_special_tokens"] = add_special_tokens
         resp = self._post("/completions", body)
         if not resp.ok:
             raise ApiError(resp.status_code, resp.text)

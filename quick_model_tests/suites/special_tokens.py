@@ -32,18 +32,22 @@ What the checks pin down:
                                               bos_single_in_completions
     pre-rendered    nobody adds a second   -> bos_no_double_in_rendered_completion,
                                               bos_rendered_prompt_stops
-    the flag        works, and is a no-op  -> bos_absent_without_specials,
-                                              bos_flag_invariant,
-                                              bos_chat_render_roundtrip
     paths agree     same id, same count    -> bos_consistent_identity, bos_single_token,
                                               bos_generation_matches_tokenize
     EOS side        nobody appends one     -> eos_not_appended_to_prompt
 
 Wherever a BOS is expected the check asserts *exactly one*, never "at most one" --
 written as two bounds, `<=1` (nobody doubled it) and `>=1` (nobody dropped it), so
-the failure names the direction that broke. Checks assert on the server's DEFAULT
-tokenization; `add_special_tokens` is sent only by the checks for which the flag
-itself is the subject.
+the failure names the direction that broke.
+
+NO REQUEST HERE SENDS `add_special_tokens`. Every check reads the server's DEFAULT
+tokenization, because the default is what a client that doesn't override the flag
+actually gets, and it is the only behavior the server is answerable for. The
+per-endpoint defaults (vLLM, before per-model overrides) are what the checks are
+really probing:
+
+    /tokenize chat form    False      /chat/completions   False
+    /tokenize completion   True       /completions        True
 
 READ THIS BEFORE "FIXING" A RED CHECK. Apertus 1.5 has TWO BOS owners: the template
 emits `{{ bos_token }}`, and the tokenizer's `TemplateProcessing` post-processor
@@ -89,8 +93,7 @@ pytestmark = pytest.mark.special_tokens
 # after a template-owns fix the tokenizer may no longer add one, but the template
 # still emits it as the rendered prompt's first token.
 _BOS_TOKEN_RE = re.compile(
-    r"^\s*(?:<s>|<\|begin_of_text\|>|<\|startoftext\|>|<bos>|\[BOS\]|"
-    r"<\|begin▁of▁sentence\|>)\s*$"
+    r"^\s*(?:<s>|<\|begin_of_text\|>|<\|startoftext\|>|<bos>|\[BOS\]|<\|begin▁of▁sentence\|>)\s*$"
 )
 
 # Any short, deterministic text works; the checks are about the tokens at the
@@ -341,130 +344,40 @@ def test_bos_no_double_in_rendered_completion(client, bos):
 
 
 def test_bos_rendered_prompt_stops(client, bos):
-    """bos-rendered-prompt-stops: a hard prompt, rendered and posted to /completions,
-    reaches its stop token instead of running away.
+    """bos-rendered-prompt-stops: a hard prompt, rendered and posted to /completions
+    under the server's DEFAULT tokenization, reaches its stop token instead of
+    running away.
 
     The behavioral half: a doubled BOS only shows up in generation, and only on hard
-    prompts. Both arms send the identical rendered string with the same budget; only
-    `add_special_tokens` differs:
+    prompts. The default prepends a BOS onto the one the template already rendered, so
+    the model sees a bigram it never trained on.
 
-        control  add_special_tokens=False -> one BOS  -> must stop cleanly
-        subject  server default           -> two BOS  -> runs to length (the bug)
-
-    The control runs first and skips the check if it cannot stop either -- that would
-    mean the prompt or budget is a bad vehicle. So a failure is attributable to the
-    doubled BOS and nothing else.
+    The control is `core-no-degeneration-hard`, which sends the SAME `_HARD_PROMPT`
+    text-only through the chat path (one BOS) and passes. Green there and red here
+    isolates the doubled BOS. Both are cheap enough to keep separate; neither sends
+    `add_special_tokens`.
     """
     _bos_id, bos_str = bos
     hard = [{"role": "user", "content": _HARD_PROMPT}]
     rendered = _rendered_chat_prompt(client, hard)
     _skip_unless_rendered_has_bos(rendered, bos_str)
     try:
-        control = client.complete(
-            rendered, max_tokens=_HARD_MAX_TOKENS, add_special_tokens=False
-        )
-        subject = client.complete(rendered, max_tokens=_HARD_MAX_TOKENS)
+        resp = client.complete(rendered, max_tokens=_HARD_MAX_TOKENS)
     except ApiError as exc:
         pytest.skip(f"/completions not available: {exc}")
-    if control["choices"][0]["finish_reason"] != "stop":
-        pytest.skip(
-            "control arm (add_special_tokens=False, one BOS) did not stop either -- "
-            "the prompt/budget is not a valid vehicle for this comparison"
-        )
-    finish = subject["choices"][0]["finish_reason"]
-    text = ChatClient.completion_text(subject)
+    finish = resp["choices"][0]["finish_reason"]
+    text = ChatClient.completion_text(resp)
     assert finish == "stop", (
-        f"the same rendered prompt stops cleanly with one BOS but ran to "
-        f"finish_reason={finish!r} under the server default (budget "
-        f"{_HARD_MAX_TOKENS}), which prepends a second {bos_str!r}: the model never "
-        f"reaches its stop token. Tail: {text[-200:]!r}"
+        f"a rendered chat prompt posted to /completions ran to "
+        f"finish_reason={finish!r} without stopping (budget {_HARD_MAX_TOKENS}). The "
+        f"default prepends a second {bos_str!r} onto the template's, and the model "
+        f"never reaches its stop token. The same prompt sent text-only through chat "
+        f"(core-no-degeneration-hard) stops normally. Tail: {text[-200:]!r}"
     )
     reason = _degeneration_reason(text)
     assert reason is None, (
-        f"under the server default the rendered prompt degenerated where the "
-        f"one-BOS control did not: {reason}"
-    )
-
-
-# --- BOS: the add_special_tokens flag -----------------------------------------
-
-
-def test_bos_absent_without_specials(client, bos):
-    """bos-absent-without-specials: `add_special_tokens=False` prepends no BOS.
-
-    The escape hatch: a caller who renders the template itself must be able to supply
-    its own BOS without the tokenizer adding a second. Green before and after a
-    single-owner fix -- it fails only if the server ignores the flag.
-    """
-    bos_id, bos_str = bos
-    try:
-        ids = client.tokenize(_PROMPT, add_special_tokens=False)
-    except ApiError as exc:
-        pytest.skip(f"/tokenize not available: {exc}")
-    count = _count_leading_bos(ids, bos_id)
-    assert count == 0, (
-        f"add_special_tokens=False still prepended {count} BOS (id {bos_id}, "
-        f"{bos_str!r}) to a plain prompt; first ids {ids[:6]}. The server ignores the "
-        f"flag, so a caller cannot avoid doubling a BOS it supplies itself."
-    )
-
-
-def test_bos_flag_invariant(client, bos):
-    """bos-flag-invariant: the rendered chat prompt carries exactly one BOS whatever
-    `add_special_tokens` says.
-
-    The acceptance test for a durable fix. Flag-invariance is what separates one BOS
-    owner from a per-call-site mitigation that must be re-verified at every entry
-    point forever -- miss one, silent degeneration.
-
-        two owners: False -> 1,  True -> 2,  default -> 2   RED
-        one owner:  False -> 1,  True -> 1,  default -> 1   GREEN
-
-    Unlike a "never double" assertion on a plain prompt, this is satisfiable either
-    way: it asks whether the flag *changes* the count, not what the count is.
-    """
-    bos_id, bos_str = bos
-    rendered = _rendered_chat_prompt(client, [{"role": "user", "content": _WORD}])
-    _skip_unless_rendered_has_bos(rendered, bos_str)
-    counts = {}
-    for label, flag in (("default", None), ("True", True), ("False", False)):
-        try:
-            ids = client.tokenize(rendered, add_special_tokens=flag)
-        except ApiError as exc:
-            pytest.skip(f"/tokenize not available (add_special_tokens={label}): {exc}")
-        counts[label] = _count_leading_bos(ids, bos_id)
-    assert set(counts.values()) == {1}, (
-        f"the leading-BOS count of a rendered chat prompt depends on "
-        f"add_special_tokens: {counts} (id {bos_id}, {bos_str!r}), expected 1 for all. "
-        f"Two owners add the BOS, so the flag is the only thing preventing a double."
-    )
-
-
-def test_bos_chat_render_roundtrip(client, bos):
-    """bos-chat-render-roundtrip: re-encoding the rendered chat prompt with
-    `add_special_tokens=False` reproduces the chat ids exactly.
-
-    The prescribed mitigation is to encode an already-rendered prompt with the flag
-    off. This checks it works: a mismatch means a client doing exactly that still does
-    not reproduce the training render, because the string round-trip is lossy.
-    """
-    _bos_id, bos_str = bos
-    messages = [{"role": "user", "content": _WORD}]
-    try:
-        chat_ids = client.tokenize_chat(messages)
-    except ApiError as exc:
-        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
-    rendered = _rendered_chat_prompt(client, messages)
-    _skip_unless_rendered_has_bos(rendered, bos_str)
-    try:
-        reencoded = client.tokenize(rendered, add_special_tokens=False)
-    except ApiError as exc:
-        pytest.skip(f"/tokenize not available: {exc}")
-    assert reencoded == chat_ids, (
-        f"rendering the chat template and re-encoding it with "
-        f"add_special_tokens=False gave {len(reencoded)} tokens {reencoded[:8]}, "
-        f"not the chat form's {len(chat_ids)} {chat_ids[:8]}: the round-trip through "
-        f"the rendered string is lossy."
+        f"a rendered chat prompt posted to /completions degenerated where the same "
+        f"prompt sent text-only through chat does not: {reason}"
     )
 
 
