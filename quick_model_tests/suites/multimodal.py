@@ -24,6 +24,11 @@ from pathlib import Path
 import pytest
 
 from quick_model_tests.client import ApiError, ChatClient
+from quick_model_tests.suites.core import (
+    _HARD_MAX_TOKENS,
+    _HARD_PROMPT,
+    _degeneration_reason,
+)
 
 pytestmark = pytest.mark.multimodal
 
@@ -197,3 +202,63 @@ def test_mm_interleaved(client, mm_supported):
     content = _content(resp)
     assert content, "empty response for interleaved image+audio"
     assert not SPECIAL_TOKEN_RE.search(content), f"token leak: {content!r}"
+
+
+# --- apertus-program #420: end-to-end reproduction ----------------------------
+#
+# The `special_tokens` suite catches the double-BOS at the token level:
+# `bos-single-in-mm-chat` sees a multimodal chat prompt render as `<s><s>...`
+# because vLLM's mm tokenization restores `add_special_tokens=True` (via
+# `mm_processor.info.default_tok_params`) on top of a template that already emits
+# `{{ bos_token }}`. Those probes read `/tokenize`, which is a *proxy* -- it need not
+# traverse the same code path as generation.
+#
+# This is the behavioral reproduction: the symptom #420 actually reported. The bug
+# surfaced only on HARD prompts (medqa/math) -- the model ran to the token budget and
+# never emitted its stop token. It sends `core._HARD_PROMPT` (the very prompt
+# `core-no-degeneration-hard` sends text-only, and passes) with an attachment, so the
+# only difference between the two checks is the modality -- and therefore the doubled
+# BOS. core green + this red pins the fault to the multimodal path, in generation
+# rather than merely in `/tokenize`.
+
+
+def _assert_hard_prompt_stops(client, part, kind):
+    """Send the hard prompt with `part` attached; assert the model stops on its own
+    and does not degenerate. `finish_reason="length"` on a one-sentence question with
+    a 4096-token budget is the runaway signature, not a tight budget."""
+    resp = client.chat(
+        [{"role": "user", "content": [_text(_HARD_PROMPT), part]}],
+        max_tokens=_HARD_MAX_TOKENS,
+    )
+    finish = resp["choices"][0]["finish_reason"]
+    content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
+    assert finish == "stop", (
+        f"{kind}+text hard prompt ran to finish_reason={finish!r} without stopping "
+        f"(budget {_HARD_MAX_TOKENS}). The same prompt sent text-only "
+        f"(core-no-degeneration-hard) stops normally, so the attachment is what "
+        f"breaks it -- the runaway signature of a doubled BOS on the multimodal "
+        f"generation path. Tail: {content[-200:]!r}"
+    )
+    reason = _degeneration_reason(content)
+    assert reason is None, (
+        f"{kind}+text hard prompt degenerated where the same prompt sent text-only "
+        f"does not: {reason}"
+    )
+
+
+def test_mm_no_degeneration_hard(client, mm_supported):
+    """mm-no-degeneration-hard: a hard prompt + image completes and stops.
+
+    The end-to-end reproduction of apertus-program #420. See the comment above.
+    """
+    _assert_hard_prompt_stops(client, _image("image_4827.png"), "image")
+
+
+def test_mm_no_degeneration_hard_audio(client, mm_supported):
+    """mm-no-degeneration-hard-audio: a hard prompt + audio completes and stops.
+
+    Audio triggers the same `default_tok_params` mm path as image, and
+    `bos-single-in-mm-chat-audio` shows it doubling too, so it gets its own
+    reproduction.
+    """
+    _assert_hard_prompt_stops(client, _audio("audio_fox.wav"), "audio")

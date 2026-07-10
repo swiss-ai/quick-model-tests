@@ -1,34 +1,68 @@
 """special_tokens suite -- BOS/EOS ownership across every tokenization path.
 
-Every check in here is token-level: it reads back what the server's DEFAULT
-tokenization produced (via `/tokenize`, `/detokenize`, or `/completions`
-`prompt_logprobs`) and asserts an invariant about the special tokens at the
-edges of the prompt. No request in this suite sends `add_special_tokens` -- the
-suite judges the server's default behavior, not what a client can override.
+Mostly token-level: read back what the server tokenized (via `/tokenize`,
+`/detokenize`, or `/completions` `prompt_logprobs`) and assert an invariant about
+the special tokens at the prompt's edges. Two checks are behavioral, because a
+doubled BOS is only observable in generation on the paths `/tokenize` cannot reach.
 
-Background (apertus-program #420, raised by the SML eval team on vLLM 0.19):
-when a chat template hardcodes the BOS token (Apertus' reasoning/answer template
-emits `{{ bos_token }}` = `<s>`), a client that applies the template and posts
-the rendered prompt hits a server that prepends BOS again -> `<s><s>...` -> text
-degeneration. The fix makes exactly one layer the BOS owner per path, which is
-what these checks pin down:
+Background (apertus-program #420, SML eval team, vLLM 0.19). A double BOS needs BOTH:
 
-    chat path        template owns the BOS   -> bos_single_in_chat, no_double_bos_chat
-    raw/completion   tokenizer owns the BOS  -> bos_single_in_completion
-    both agree       same token id           -> bos_consistent_identity
-    EOS side         nobody appends one      -> eos_not_appended_to_prompt
+  1. the rendered text already carries a literal BOS -- the chat template emits
+     `{{ bos_token }}` unconditionally, so an applied template starts with it; and
+  2. that rendered string is encoded again with `add_special_tokens=True`, whose
+     post-processor for a single sequence is `<bos> + Sequence`.
 
-The over-correction matters as much as the original bug: stripping the
-tokenizer's post-processor BOS fixes chat but leaves `/completions` and lm-eval
-loglikelihood paths with no BOS at all -> train/inference mismatch. So the checks
-assert *exactly one*, never "at most one", wherever a BOS is expected.
+The result is a `<bos><bos>` bigram the model never saw in training, so on hard
+prompts (medqa/math) it runs to the token budget and never emits its stop token.
+vLLM's `add_special_tokens` default, before per-model overrides:
 
-Every check is model-agnostic: the BOS is discovered from a rendered chat prompt
-(see `_discover_bos_from_chat`), and a model with no BOS (e.g. Qwen) skips.
+                     completion path   chat path
+      text-only            True          False   <- the only carve-out
+      multimodal           True          True    <- mm chat loses the carve-out
 
-The end-to-end behavioral counterpart -- degeneration and runaway generation, the
-symptom a double-BOS actually produces -- stays in the `core` suite
-(`core-no-degeneration`, `core-no-degeneration-hard`).
+Two exposed paths, each reproduced here: multimodal chat, where the SERVER renders
+and re-encodes (`bos_single_in_mm_chat*`; end-to-end in the multimodal suite's
+`mm_no_degeneration_hard`), and the completion path, where the CALLER renders and
+posts the string (`bos_no_double_in_rendered_completion`, `bos_rendered_prompt_stops`).
+
+What the checks pin down:
+
+    chat path       template owns the BOS  -> bos_single_in_chat, bos_single_in_mm_chat*
+    raw/completion  tokenizer owns it      -> bos_single_in_raw_tokenize,
+                                              bos_single_in_completions
+    pre-rendered    nobody adds a second   -> bos_no_double_in_rendered_completion,
+                                              bos_rendered_prompt_stops
+    the flag        works, and is a no-op  -> bos_absent_without_specials,
+                                              bos_flag_invariant,
+                                              bos_chat_render_roundtrip
+    paths agree     same id, same count    -> bos_consistent_identity, bos_single_token,
+                                              bos_generation_matches_tokenize
+    EOS side        nobody appends one     -> eos_not_appended_to_prompt
+
+Wherever a BOS is expected the check asserts *exactly one*, never "at most one" --
+written as two bounds, `<=1` (nobody doubled it) and `>=1` (nobody dropped it), so
+the failure names the direction that broke. Checks assert on the server's DEFAULT
+tokenization; `add_special_tokens` is sent only by the checks for which the flag
+itself is the subject.
+
+READ THIS BEFORE "FIXING" A RED CHECK. Apertus 1.5 has TWO BOS owners: the template
+emits `{{ bos_token }}`, and the tokenizer's `TemplateProcessing` post-processor
+prepends `<s>` on `add_special_tokens=True`. That dual ownership IS the bug, so which
+checks are red depends on which fix ships:
+
+  * `bos_single_in_raw_tokenize` / `bos_single_in_completions` demand exactly one BOS
+    on the raw default path -- the tokenizer keeps owning it there, because
+    `/completions` and lm-eval loglikelihood never invoke the template and would
+    otherwise lose the attention-sink token.
+  * A template-owns fix (apertus-omni-tokenizer#18) strips the post-processor's BOS,
+    making the raw default prepend ZERO. Those two go red BY DESIGN if it lands, and
+    the reproductions go green.
+
+So this suite does not describe settled behavior on the raw path; it makes the
+ownership visible. Update it when the ownership question is decided -- see SPEC.md 7.2.
+
+Model-agnostic throughout: the BOS is discovered from a rendered chat prompt (the
+`bos` fixture), and a model with no BOS (e.g. Qwen) skips.
 """
 
 import re
@@ -36,37 +70,76 @@ import re
 import pytest
 
 from quick_model_tests.client import ApiError, ChatClient
-from quick_model_tests.suites.core import _CONTROL_TOKEN_RE, _THINKING_MAX_TOKENS
+from quick_model_tests.suites.core import (
+    _CONTROL_TOKEN_RE,
+    _HARD_MAX_TOKENS,
+    _HARD_PROMPT,
+    _THINKING_MAX_TOKENS,
+    _degeneration_reason,
+)
 from quick_model_tests.suites.multimodal import _audio, _image, _text
 
 pytestmark = pytest.mark.special_tokens
 
-# Recognizable start-of-sequence tokens across model families. Used to identify
-# the BOS from a rendered chat prompt WITHOUT relying on the tokenizer
-# auto-prepending it -- after a template-owns fix (apertus-program #420) the
-# tokenizer no longer adds a BOS, but the chat template still emits one as the
-# rendered prompt's first token.
+
+# --- constants ----------------------------------------------------------------
+
+# Recognizable start-of-sequence tokens across model families. Identifies the BOS
+# from a rendered chat prompt WITHOUT relying on the tokenizer auto-prepending it:
+# after a template-owns fix the tokenizer may no longer add one, but the template
+# still emits it as the rendered prompt's first token.
 _BOS_TOKEN_RE = re.compile(
     r"^\s*(?:<s>|<\|begin_of_text\|>|<\|startoftext\|>|<bos>|\[BOS\]|"
     r"<\|begin▁of▁sentence\|>)\s*$"
 )
 
+# Any short, deterministic text works; the checks are about the tokens at the
+# edges, never the content. `_WORD` is used where a one-token body keeps the
+# leading/trailing ids easy to read.
+_PROMPT = "The capital of France is Paris."
+_WORD = "Paris"
 
-def _discover_bos_from_chat(client):
-    """Return ``(bos_id, bos_str, chat_ids)`` where the BOS is read from a rendered
-    chat prompt -- the chat template emits it first -- so discovery never has to
-    override ``add_special_tokens``: every request in the BOS checks runs with the
-    server's own defaults, which is what the suite is judging. Skips if the
-    chat form / detokenize is unavailable, or if the prompt's first token is not a
-    recognizable BOS (a model with no BOS, e.g. Qwen)."""
+# A per-turn `{{ bos_token }}` (rather than one at the top) only doubles from the
+# second turn on, so the chat check tokenizes both shapes.
+_CHAT_SHAPES = {
+    "single-turn": [{"role": "user", "content": _PROMPT}],
+    "multi-turn": [
+        {"role": "user", "content": "Hi!"},
+        {"role": "assistant", "content": "Hello! How can I help?"},
+        {"role": "user", "content": _PROMPT},
+    ],
+}
+
+
+# --- fixtures -----------------------------------------------------------------
+
+
+@pytest.fixture
+def bos(client):
+    """``(bos_id, bos_str)``, read off a rendered chat prompt -- the template emits
+    the BOS first -- so discovery never overrides ``add_special_tokens``. Skips the
+    requesting test when the chat form / detokenize is unavailable, or the first
+    token is not a recognizable BOS (a model with no BOS, e.g. Qwen).
+
+    Yields the identity only, never the ids it saw: a test asserting on those would
+    be checking the sequence this fixture already vetted, and since it skips unless
+    ``ids[0]`` is a BOS, ">=1 leading BOS" would hold by construction. Every check
+    re-tokenizes its own prompt.
+
+    Function-scoped on purpose. Session scope would save a handful of tiny
+    `/tokenize` calls, but `--record-responses` writes one folder per test (SPEC 8),
+    so a cached fixture would record the discovery requests under whichever test ran
+    first and omit them everywhere else.
+    """
     try:
-        ids = client.tokenize_chat([{"role": "user", "content": "Paris"}])
+        ids = client.tokenize_chat([{"role": "user", "content": _WORD}])
     except ApiError as exc:
         pytest.skip(f"/tokenize does not accept chat messages: {exc}")
     if len(ids) < 2:
         pytest.skip("chat tokenization returned too few tokens")
+    bos_id = ids[0]
     try:
-        bos_str = client.detokenize([ids[0]])
+        bos_str = client.detokenize([bos_id])
     except ApiError as exc:
         pytest.skip(f"/detokenize not available: {exc}")
     if not _BOS_TOKEN_RE.match(bos_str):
@@ -74,10 +147,13 @@ def _discover_bos_from_chat(client):
             f"chat prompt does not begin with a recognizable BOS ({bos_str!r}); "
             f"model's chat format carries no leading BOS"
         )
-    return ids[0], bos_str, ids
+    return bos_id, bos_str
 
 
-def _leading_bos_count(ids, bos_id):
+# --- helpers ------------------------------------------------------------------
+
+
+def _count_leading_bos(ids, bos_id):
     """How many BOS ids the sequence starts with (0, 1, or more)."""
     n = 0
     for t in ids:
@@ -88,233 +164,52 @@ def _leading_bos_count(ids, bos_id):
     return n
 
 
-# --- BOS: the chat path (template owns the BOS) ------------------------------
-
-
-def test_core_bos_single_in_chat(client):
-    """core-bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
-
-    The *positive* companion to the double-BOS probes. Reads the BOS straight from
-    the rendered chat prompt (the template emits it first) and asserts the
-    invariant: when the chat prompt begins with a BOS, there is exactly one, never
-    two (the original bug). Model-agnostic: a chat format whose first token is not
-    a recognizable BOS -- whether a model with no BOS (e.g. Qwen) or a regression
-    that dropped it -- skips rather than failing, so this is a guard against
-    re-doubling, not against a zero-BOS over-correction (which
-    `core-bos-single-in-completion` and `core-no-degeneration` surface).
-    """
-    bos_id, bos_str, ids = _discover_bos_from_chat(client)
-    count = _leading_bos_count(ids, bos_id)
-    assert count == 1, (
-        f"chat prompt must begin with exactly one BOS, got {count} leading "
-        f"{bos_str!r} (first ids {ids[:6]}). Two means the double-BOS regression "
-        f"is back -- the chat template must be the sole BOS owner "
-        f"(apertus-program #420)."
-    )
-
-
-def test_core_no_double_bos_chat(client):
-    """core-no-double-bos-chat: the /chat tokenization path must not add a 2nd BOS
-    on top of the template's own.
-
-    This is the path the bug was reported on (apertus-program #420): the chat
-    template emits `{{ bos_token }}`, so the rendered chat prompt already starts
-    with `<s>`. If the server then tokenizes that rendered string with
-    `add_special_tokens=True` -- which the Apertus multimodal path restores via
-    `mm_processor.info.default_tok_params` -- the prompt begins `<s><s>...` ->
-    degeneration. `core-no-double-bos` probes the same fault on /completions with a
-    hand-crafted prompt; this probes the real chat path a chat client hits, by
-    asking /tokenize to apply the server's own template (all defaults, nothing
-    overridden).
-    """
-    bos_id, _, _ = _discover_bos_from_chat(client)
+def _rendered_chat_prompt(client, messages):
+    """The exact string the server's chat template renders for ``messages`` -- what a
+    client applies locally before posting to `/completions`. Read back from the server
+    (tokenize the chat form, detokenize the ids) so it is the server's own template."""
     try:
-        ids = client.tokenize_chat(
-            [{"role": "user", "content": "The capital of France is Paris."}]
-        )
+        ids = client.tokenize_chat(messages)
     except ApiError as exc:
         pytest.skip(f"/tokenize does not accept chat messages: {exc}")
     if not ids:
         pytest.skip("chat tokenization returned no tokens")
-    leading = _leading_bos_count(ids, bos_id)
-    assert leading <= 1, (
-        f"double-BOS on the chat path: the server applied its chat template (which "
-        f"emits the BOS) and then tokenized with specials added on top, so the "
-        f"prompt starts with {leading} BOS tokens (id {bos_id}, first ids "
-        f"{ids[:6]}) -> `<s><s>...` -> degeneration (apertus-program #420)."
-    )
-
-
-# --- BOS: the raw / completion path (tokenizer owns the BOS) -----------------
-
-
-def test_core_no_double_bos(client):
-    """core-no-double-bos: the /completions path must not prepend a 2nd BOS.
-
-    Model-agnostic. The risk path is /completions (used by e.g. OpenWebUI): when a
-    client applies the chat template (which hardcodes the BOS token) and posts the
-    rendered prompt, a server that ALSO auto-adds BOS produces `<bos><bos>...` ->
-    degeneration (apertus-program #420).
-
-    1. Discover the model's BOS from a rendered chat prompt (the template emits
-       it first) -- no `add_special_tokens` override anywhere, so every request
-       exercises the server's own defaults. No recognizable BOS -> skip.
-    2. Prefix the BOS string onto a prompt and read back what /completions
-       tokenizes it to by default (via prompt_logprobs). If the first real token
-       is the BOS again, the server double-added it -> fail.
-    """
-    bos_id, bos_str, _ = _discover_bos_from_chat(client)
     try:
-        ids = client.prompt_token_ids(f"{bos_str}The capital of France is Paris.")
+        return client.detokenize(ids)
     except ApiError as exc:
-        pytest.skip(f"prompt_logprobs not available: {exc}")
-    first_known = next((i for i in ids if i is not None), None)
-    assert first_known != bos_id, (
-        f"double-BOS on /completions: a {bos_str!r}-prefixed prompt tokenized to "
-        f"two leading BOS tokens (id {bos_id}, first ids {ids}). A client posting a "
-        f"chat-templated prompt here gets `{bos_str}{bos_str}...` -> degeneration "
-        f"(apertus-program #420)."
+        pytest.skip(f"/detokenize not available: {exc}")
+
+
+def _skip_unless_rendered_has_bos(rendered, bos_str):
+    if not rendered.lstrip().startswith(bos_str):
+        pytest.skip(f"rendered chat prompt does not start with {bos_str!r}")
+
+
+def _assert_exactly_one_leading_bos(ids, bos, where):
+    """Assert ``ids`` starts with exactly one BOS. Two bounds, so the message names
+    the direction that broke."""
+    bos_id, bos_str = bos
+    count = _count_leading_bos(ids, bos_id)
+    assert count <= 1, (
+        f"{where} begins with {count} BOS tokens (id {bos_id}, {bos_str!r}), "
+        f"expected 1; first ids {ids[:6]}. A repeated BOS is a bigram the model was "
+        f"never trained on."
+    )
+    assert count >= 1, (
+        f"{where} begins with no BOS (id {bos_id}, {bos_str!r}), expected 1; "
+        f"first ids {ids[:6]}. The model was trained with a leading BOS."
     )
 
 
-def test_core_no_double_bos_tokenize(client):
-    """core-no-double-bos-tokenize: /tokenize must not add a 2nd BOS to a string
-    that already begins with the BOS.
+def _assert_single_bos_in_mm_chat(client, bos, part, kind):
+    """Tokenize a `text + <modality>` chat through the server's own template and
+    assert exactly one leading BOS. vLLM's multimodal tokenization restores
+    ``add_special_tokens=True`` (via ``mm_processor.info.default_tok_params``), so a
+    template that also emits ``{{ bos_token }}`` renders a doubled BOS.
 
-    Same fault as `core-no-double-bos`, but observed through `/tokenize` instead of
-    `/completions` `prompt_logprobs`, so the check still fires on gateways that
-    expose one endpoint but not the other. Prefixes the BOS string onto a prompt
-    (mimicking an already-rendered chat template), tokenizes with the server's
-    DEFAULT settings (no `add_special_tokens` sent), and asserts the result does
-    not start with two BOS: a sensible default must not double a BOS the caller
-    already supplied.
+    Best-effort proxy: ``/tokenize`` may not traverse the same mm code path as
+    generation, but it is the only observable surface for the rendered mm prompt.
     """
-    bos_id, bos_str, _ = _discover_bos_from_chat(client)
-    try:
-        ids = client.tokenize(f"{bos_str}The capital of France is Paris.")
-    except ApiError as exc:
-        pytest.skip(f"/tokenize not available: {exc}")
-    assert _leading_bos_count(ids, bos_id) <= 1, (
-        f"double-BOS on /tokenize: a {bos_str!r}-prefixed prompt tokenized to two "
-        f"leading BOS tokens (id {bos_id}, first ids {ids[:6]}). A client posting a "
-        f"chat-templated prompt gets `{bos_str}{bos_str}...` -> degeneration "
-        f"(apertus-program #420)."
-    )
-
-
-def test_core_bos_single_in_completion(client):
-    """core-bos-single-in-completion: the raw (non-chat) tokenization path supplies
-    exactly one BOS.
-
-    Guards the OTHER side of BOS ownership. `/completions`, offline
-    `generate`, and lm-eval loglikelihood tasks never invoke the chat template;
-    they tokenize raw text with the server's defaults and rely on the tokenizer
-    to supply the BOS the model was pretrained with (the attention-sink first
-    token). This check discovers the model's BOS from the chat template, then
-    asserts a raw DEFAULT tokenization (no `add_special_tokens` sent) begins with
-    exactly one of it -- never zero, never two.
-
-    Zero is the failure mode of an over-correction that makes the template the
-    *sole* BOS owner (e.g. stripping the tokenizer's post-processor BOS): chat is
-    fixed, but the completion/eval paths lose their BOS -> train/inference mismatch
-    (apertus-program #420 discussion). Two is the original double-BOS. Skips for
-    models with no BOS.
-    """
-    bos_id, bos_str, _ = _discover_bos_from_chat(client)
-    try:
-        raw = client.tokenize("The capital of France is Paris.")
-    except ApiError as exc:
-        pytest.skip(f"/tokenize not available: {exc}")
-    count = _leading_bos_count(raw, bos_id)
-    detail = (
-        "0 means the default tokenization does not prepend the BOS the model was "
-        "pretrained with -- raw /completions and lm-eval loglikelihood paths "
-        "mismatch the training format (attention-sink token missing). "
-        if count == 0
-        else "2 means a double-BOS. "
-        if count > 1
-        else ""
-    )
-    assert count == 1, (
-        f"default raw tokenization must supply exactly one BOS "
-        f"(id {bos_id}, {bos_str!r}); got {count} (first ids {raw[:6]}). {detail}"
-        f"The chat template and the raw default are each authoritative for "
-        f"different paths -- keep the completion path's BOS (apertus-program #420)."
-    )
-
-
-# --- BOS: the two paths must agree -------------------------------------------
-
-
-def test_core_bos_single_token(client):
-    """core-bos-single-token: the model's BOS string encodes to exactly one
-    BOS token.
-
-    Discovers the BOS from a rendered chat prompt, then tokenizes a plain prompt
-    and the same prompt with the BOS string prefixed -- both with the server's
-    DEFAULT tokenization (no `add_special_tokens` override). The prefixed result
-    must be exactly `[bos_id] + plain`: whatever the default adds, it adds to
-    both, so the difference isolates how the BOS *string* encodes. If it splits
-    into several tokens, the chat template (which emits that string) and the
-    tokenizer disagree -- the template text won't map back to the BOS the model
-    was trained on. Skips when the model has no BOS or /tokenize is absent.
-    """
-    bos_id, bos_str, _ = _discover_bos_from_chat(client)
-    text = "The capital of France is Paris."
-    try:
-        plain = client.tokenize(text)
-        prefixed = client.tokenize(f"{bos_str}{text}")
-    except ApiError as exc:
-        pytest.skip(f"/tokenize not available: {exc}")
-    assert prefixed == [bos_id] + plain, (
-        f"BOS string {bos_str!r} did not encode to a single BOS token "
-        f"(id {bos_id}) on the default /tokenize path: prefixed ids {prefixed[:8]} "
-        f"vs plain ids {plain[:8]} -- chat-template/tokenizer mismatch"
-    )
-
-
-def test_core_bos_consistent_identity(client):
-    """core-bos-consistent-identity: the chat and raw paths agree on the BOS token.
-
-    The BOS the chat template emits must be the same id the tokenizer prepends on
-    the raw default path -- otherwise the two paths feed the model different
-    'start' tokens. Only checked when the raw default actually prepends a
-    recognizable BOS (skips on a config with no raw-path BOS, which
-    `core-bos-single-in-completion` already flags).
-    """
-    bos_id, bos_str, _ = _discover_bos_from_chat(client)
-    try:
-        raw = client.tokenize("Paris")
-        raw_first = client.detokenize([raw[0]]) if raw else ""
-    except ApiError as exc:
-        pytest.skip(f"/tokenize or /detokenize not available: {exc}")
-    if not _BOS_TOKEN_RE.match(raw_first):
-        pytest.skip(
-            "raw default path prepends no BOS (see core-bos-single-in-completion)"
-        )
-    assert raw[0] == bos_id, (
-        f"BOS identity mismatch: the chat template emits id {bos_id} ({bos_str!r}) "
-        f"but the raw default path prepends id {raw[0]} ({raw_first!r}). "
-        f"Both paths must feed the model the same BOS it was trained with "
-        f"(apertus-program #420)."
-    )
-
-
-# --- BOS: the multimodal chat path -------------------------------------------
-
-
-def _assert_single_bos_in_mm_chat(client, part, kind):
-    """Tokenize a `<text> + <modality>` chat through the server's own template and
-    assert exactly one leading BOS. The path apertus-program #420 was reported on:
-    vLLM's multimodal tokenization restores ``add_special_tokens=True`` (via
-    ``mm_processor.info.default_tok_params``), so if the chat template also emits
-    ``{{ bos_token }}`` the rendered prompt starts ``<s><s>``. Skips if
-    ``/tokenize`` does not accept multimodal messages or the model has no BOS.
-
-    (Best-effort proxy: ``/tokenize`` may not traverse the same mm code path as
-    generation, but it is the only observable surface for the rendered mm prompt.)
-    """
-    bos_id, bos_str, _ = _discover_bos_from_chat(client)
     messages = [{"role": "user", "content": [_text("Describe this input."), part]}]
     try:
         ids = client.tokenize_chat(messages)
@@ -322,44 +217,342 @@ def _assert_single_bos_in_mm_chat(client, part, kind):
         pytest.skip(f"/tokenize does not accept multimodal messages: {exc}")
     if not ids:
         pytest.skip("multimodal chat tokenization returned no tokens")
-    count = _leading_bos_count(ids, bos_id)
-    assert count == 1, (
-        f"{kind} chat prompt must begin with exactly one BOS (id {bos_id}, "
-        f"{bos_str!r}), got {count} (first ids {ids[:6]}). Two is the multimodal "
-        f"double-BOS from `default_tok_params` restoring add_special_tokens=True "
-        f"(apertus-program #420)."
+    _assert_exactly_one_leading_bos(ids, bos, f"{kind}+text chat prompt")
+
+
+# --- BOS: the chat path (template owns the BOS) -------------------------------
+
+
+def test_bos_single_in_chat(client, bos):
+    """bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
+
+    Two means the template emitted the BOS and the server tokenized the rendered
+    string with specials added on top. Zero means the template stopped emitting it.
+    Both chat shapes: a per-turn `{{ bos_token }}` only doubles from the 2nd turn on.
+    """
+    for shape, messages in _CHAT_SHAPES.items():
+        try:
+            ids = client.tokenize_chat(messages)
+        except ApiError as exc:
+            pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+        if not ids:
+            pytest.skip(f"{shape} chat tokenization returned no tokens")
+        _assert_exactly_one_leading_bos(ids, bos, f"{shape} chat prompt")
+
+
+def test_bos_single_in_mm_chat(client, bos):
+    """bos-single-in-mm-chat: an image+text chat prompt begins with exactly one BOS."""
+    _assert_single_bos_in_mm_chat(client, bos, _image("image_4827.png"), "image")
+
+
+def test_bos_single_in_mm_chat_audio(client, bos):
+    """bos-single-in-mm-chat-audio: an audio+text chat prompt begins with one BOS.
+
+    Audio triggers the same `default_tok_params` mm path as image.
+    """
+    _assert_single_bos_in_mm_chat(client, bos, _audio("audio_fox.wav"), "audio")
+
+
+# --- BOS: the raw / completion path (tokenizer owns the BOS) ------------------
+
+
+def test_bos_single_in_raw_tokenize(client, bos):
+    """bos-single-in-raw-tokenize: raw (non-chat) /tokenize supplies exactly one BOS.
+
+    `/completions`, offline `generate`, and lm-eval loglikelihood never invoke the
+    chat template; they rely on the tokenizer for the BOS the model was pretrained
+    with (the attention-sink first token). Zero is the over-correction of a
+    template-owns fix; two is the double-BOS.
+    """
+    try:
+        raw = client.tokenize(_PROMPT)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    _assert_exactly_one_leading_bos(raw, bos, "default raw tokenization")
+
+
+def test_bos_single_in_completions(client, bos):
+    """bos-single-in-completions: the /completions DEFAULT supplies exactly one BOS.
+
+    Same invariant as `bos-single-in-raw-tokenize`, on the endpoint that actually
+    generates -- a gateway may default differently there.
+
+    `prompt_logprobs` reports None at position 0, so the first token is never directly
+    observable. Anchor on the content: take the DEFAULT `/tokenize` of the same prompt
+    and drop whatever BOS it prepended, leaving the body ids. That adapts to any
+    `/tokenize` default, so this check stays independent of the one above.
+
+        ids[1] == bos_id   -> positions 0 AND 1 are BOS: doubled
+        ids[1] == body[0]  -> exactly one token precedes the content: one BOS
+        ids[1] == body[1]  -> the content starts at position 0: no BOS at all
+    """
+    bos_id, bos_str = bos
+    try:
+        raw = client.tokenize(_PROMPT)
+        ids = client.prompt_token_ids(_PROMPT)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize or prompt_logprobs not available: {exc}")
+    # `_PROMPT` is plain prose, so every leading BOS here came from the tokenizer.
+    body = raw[_count_leading_bos(raw, bos_id) :]
+    if len(body) < 2 or len(ids) < 2:
+        pytest.skip("prompt too short to locate the content in the token ids")
+    assert ids[1] != bos_id, (
+        f"/completions default prepended 2 BOS (id {bos_id}, {bos_str!r}), expected 1: "
+        f"position 1 is a BOS, so position 0 is one too. ids {ids}, body {body[:4]}."
+    )
+    assert ids[1] == body[0], (
+        f"/completions default prepended no BOS (id {bos_id}, {bos_str!r}), "
+        f"expected 1: the content resumes at position 1 with {ids[1]}, not "
+        f"{body[0]}, so it began at position 0. ids {ids}, body {body[:4]}. (Or the "
+        f"two tokenizations disagree.) Raw completion and loglikelihood paths lose "
+        f"the attention-sink token."
     )
 
 
-def test_mm_bos_single_in_chat(client):
-    """mm-bos-single-in-chat: an image+text chat prompt begins with exactly one BOS.
+# --- BOS: an already-rendered prompt (nobody adds a second) -------------------
+#
+# The path a client renders itself -- OpenWebUI, lm-eval -- then posts as a string.
+# vLLM defaults `add_special_tokens=True` on the completion path, so the tokenizer
+# prepends a BOS on top of the template's. These two reproduce apertus-program #420
+# text-only, no attachment needed. Expected RED until the BOS has a single owner:
+# they reproduce a live bug, they do not describe desired behavior.
 
-    The mm counterpart to ``core-no-double-bos-chat`` -- the exact path #420 was
-    reported on. See ``_assert_single_bos_in_mm_chat``.
+
+def test_bos_no_double_in_rendered_completion(client, bos):
+    """bos-no-double-in-rendered-completion: posting the server's own rendered chat
+    prompt to /completions must not produce two leading BOS.
+
+    Position 0 has no logprob and IS the template's own BOS, so the assertion is on
+    the first known id: if that is the BOS too, the server added a second.
     """
-    _assert_single_bos_in_mm_chat(client, _image("image_4827.png"), "image")
+    bos_id, bos_str = bos
+    rendered = _rendered_chat_prompt(client, [{"role": "user", "content": _WORD}])
+    _skip_unless_rendered_has_bos(rendered, bos_str)
+    try:
+        ids = client.prompt_token_ids(rendered)
+    except ApiError as exc:
+        pytest.skip(f"prompt_logprobs not available: {exc}")
+    first_known = next((i for i in ids if i is not None), None)
+    assert first_known != bos_id, (
+        f"/completions prepended a second BOS (id {bos_id}, {bos_str!r}) onto a "
+        f"rendered chat prompt that already began with one: ids {ids}. The template "
+        f"and the tokenizer both own the BOS."
+    )
 
 
-def test_mm_bos_single_in_chat_audio(client):
-    """mm-bos-single-in-chat-audio: an audio+text chat prompt begins with one BOS.
+def test_bos_rendered_prompt_stops(client, bos):
+    """bos-rendered-prompt-stops: a hard prompt, rendered and posted to /completions,
+    reaches its stop token instead of running away.
 
-    Audio triggers the same ``default_tok_params`` mm path as image, so it gets its
-    own guard. See ``_assert_single_bos_in_mm_chat``.
+    The behavioral half: a doubled BOS only shows up in generation, and only on hard
+    prompts. Both arms send the identical rendered string with the same budget; only
+    `add_special_tokens` differs:
+
+        control  add_special_tokens=False -> one BOS  -> must stop cleanly
+        subject  server default           -> two BOS  -> runs to length (the bug)
+
+    The control runs first and skips the check if it cannot stop either -- that would
+    mean the prompt or budget is a bad vehicle. So a failure is attributable to the
+    doubled BOS and nothing else.
     """
-    _assert_single_bos_in_mm_chat(client, _audio("audio_fox.wav"), "audio")
+    _bos_id, bos_str = bos
+    hard = [{"role": "user", "content": _HARD_PROMPT}]
+    rendered = _rendered_chat_prompt(client, hard)
+    _skip_unless_rendered_has_bos(rendered, bos_str)
+    try:
+        control = client.complete(
+            rendered, max_tokens=_HARD_MAX_TOKENS, add_special_tokens=False
+        )
+        subject = client.complete(rendered, max_tokens=_HARD_MAX_TOKENS)
+    except ApiError as exc:
+        pytest.skip(f"/completions not available: {exc}")
+    if control["choices"][0]["finish_reason"] != "stop":
+        pytest.skip(
+            "control arm (add_special_tokens=False, one BOS) did not stop either -- "
+            "the prompt/budget is not a valid vehicle for this comparison"
+        )
+    finish = subject["choices"][0]["finish_reason"]
+    text = ChatClient.completion_text(subject)
+    assert finish == "stop", (
+        f"the same rendered prompt stops cleanly with one BOS but ran to "
+        f"finish_reason={finish!r} under the server default (budget "
+        f"{_HARD_MAX_TOKENS}), which prepends a second {bos_str!r}: the model never "
+        f"reaches its stop token. Tail: {text[-200:]!r}"
+    )
+    reason = _degeneration_reason(text)
+    assert reason is None, (
+        f"under the server default the rendered prompt degenerated where the "
+        f"one-BOS control did not: {reason}"
+    )
+
+
+# --- BOS: the add_special_tokens flag -----------------------------------------
+
+
+def test_bos_absent_without_specials(client, bos):
+    """bos-absent-without-specials: `add_special_tokens=False` prepends no BOS.
+
+    The escape hatch: a caller who renders the template itself must be able to supply
+    its own BOS without the tokenizer adding a second. Green before and after a
+    single-owner fix -- it fails only if the server ignores the flag.
+    """
+    bos_id, bos_str = bos
+    try:
+        ids = client.tokenize(_PROMPT, add_special_tokens=False)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    count = _count_leading_bos(ids, bos_id)
+    assert count == 0, (
+        f"add_special_tokens=False still prepended {count} BOS (id {bos_id}, "
+        f"{bos_str!r}) to a plain prompt; first ids {ids[:6]}. The server ignores the "
+        f"flag, so a caller cannot avoid doubling a BOS it supplies itself."
+    )
+
+
+def test_bos_flag_invariant(client, bos):
+    """bos-flag-invariant: the rendered chat prompt carries exactly one BOS whatever
+    `add_special_tokens` says.
+
+    The acceptance test for a durable fix. Flag-invariance is what separates one BOS
+    owner from a per-call-site mitigation that must be re-verified at every entry
+    point forever -- miss one, silent degeneration.
+
+        two owners: False -> 1,  True -> 2,  default -> 2   RED
+        one owner:  False -> 1,  True -> 1,  default -> 1   GREEN
+
+    Unlike a "never double" assertion on a plain prompt, this is satisfiable either
+    way: it asks whether the flag *changes* the count, not what the count is.
+    """
+    bos_id, bos_str = bos
+    rendered = _rendered_chat_prompt(client, [{"role": "user", "content": _WORD}])
+    _skip_unless_rendered_has_bos(rendered, bos_str)
+    counts = {}
+    for label, flag in (("default", None), ("True", True), ("False", False)):
+        try:
+            ids = client.tokenize(rendered, add_special_tokens=flag)
+        except ApiError as exc:
+            pytest.skip(f"/tokenize not available (add_special_tokens={label}): {exc}")
+        counts[label] = _count_leading_bos(ids, bos_id)
+    assert set(counts.values()) == {1}, (
+        f"the leading-BOS count of a rendered chat prompt depends on "
+        f"add_special_tokens: {counts} (id {bos_id}, {bos_str!r}), expected 1 for all. "
+        f"Two owners add the BOS, so the flag is the only thing preventing a double."
+    )
+
+
+def test_bos_chat_render_roundtrip(client, bos):
+    """bos-chat-render-roundtrip: re-encoding the rendered chat prompt with
+    `add_special_tokens=False` reproduces the chat ids exactly.
+
+    The prescribed mitigation is to encode an already-rendered prompt with the flag
+    off. This checks it works: a mismatch means a client doing exactly that still does
+    not reproduce the training render, because the string round-trip is lossy.
+    """
+    _bos_id, bos_str = bos
+    messages = [{"role": "user", "content": _WORD}]
+    try:
+        chat_ids = client.tokenize_chat(messages)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+    rendered = _rendered_chat_prompt(client, messages)
+    _skip_unless_rendered_has_bos(rendered, bos_str)
+    try:
+        reencoded = client.tokenize(rendered, add_special_tokens=False)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    assert reencoded == chat_ids, (
+        f"rendering the chat template and re-encoding it with "
+        f"add_special_tokens=False gave {len(reencoded)} tokens {reencoded[:8]}, "
+        f"not the chat form's {len(chat_ids)} {chat_ids[:8]}: the round-trip through "
+        f"the rendered string is lossy."
+    )
+
+
+# --- BOS: the paths must agree -------------------------------------------------
+
+
+def test_bos_single_token(client, bos):
+    """bos-single-token: the model's BOS string encodes to exactly one BOS token.
+
+    The prefixed tokenization must be `[bos_id] + plain`: whatever the default adds,
+    it adds to both, so the difference isolates how the BOS *string* encodes. A split
+    means the template (which emits that string) and the tokenizer disagree, and the
+    template text will not map back to the BOS the model was trained on.
+    """
+    bos_id, bos_str = bos
+    try:
+        plain = client.tokenize(_PROMPT)
+        prefixed = client.tokenize(f"{bos_str}{_PROMPT}")
+    except ApiError as exc:
+        pytest.skip(f"/tokenize not available: {exc}")
+    assert prefixed == [bos_id] + plain, (
+        f"BOS string {bos_str!r} did not encode to a single BOS token (id {bos_id}) "
+        f"on the default /tokenize path: prefixed ids {prefixed[:8]} vs plain ids "
+        f"{plain[:8]} -- chat-template/tokenizer mismatch."
+    )
+
+
+def test_bos_consistent_identity(client, bos):
+    """bos-consistent-identity: the chat and raw paths agree on the BOS token.
+
+    Otherwise the two paths feed the model different 'start' tokens. Only checked when
+    the raw default actually prepends a recognizable BOS -- a config with none is
+    `bos-single-in-raw-tokenize`'s failure to report, not this one's.
+    """
+    bos_id, bos_str = bos
+    try:
+        raw = client.tokenize(_WORD)
+        raw_first = client.detokenize([raw[0]]) if raw else ""
+    except ApiError as exc:
+        pytest.skip(f"/tokenize or /detokenize not available: {exc}")
+    if not _BOS_TOKEN_RE.match(raw_first):
+        pytest.skip("raw default path prepends no BOS (see bos-single-in-raw-tokenize)")
+    assert raw[0] == bos_id, (
+        f"BOS identity mismatch: the chat template emits id {bos_id} ({bos_str!r}) but "
+        f"the raw default path prepends id {raw[0]} ({raw_first!r}). Both must feed "
+        f"the model the same BOS it was trained with."
+    )
+
+
+def test_bos_generation_matches_tokenize(client, bos):
+    """bos-generation-matches-tokenize: the prompt the model consumed has the same
+    token count as `/tokenize`'s chat form.
+
+    Closes a proxy gap. Every other probe reads `/tokenize`, which need not traverse
+    the generation path -- the doubling lives in the renderer, so one can be patched
+    while the other is not. `usage.prompt_tokens` is the only observable count of what
+    the model was actually fed. Text-only: a multimodal prompt's `prompt_tokens`
+    includes vision-placeholder expansion, so the comparison would not be sound.
+    """
+    messages = [{"role": "user", "content": _WORD}]
+    try:
+        chat_ids = client.tokenize_chat(messages)
+    except ApiError as exc:
+        pytest.skip(f"/tokenize does not accept chat messages: {exc}")
+    if not chat_ids:
+        pytest.skip("chat tokenization returned no tokens")
+    usage = client.chat(messages, max_tokens=1).get("usage") or {}
+    if "prompt_tokens" not in usage:
+        pytest.skip("endpoint reports no usage.prompt_tokens")
+    generated = usage["prompt_tokens"]
+    assert generated == len(chat_ids), (
+        f"the generation path tokenized the prompt to {generated} tokens but "
+        f"/tokenize's chat form gives {len(chat_ids)} (first ids {chat_ids[:6]}). A "
+        f"difference of one is a BOS added on one path and not the other; every other "
+        f"BOS check here reads /tokenize and is only a proxy for what the model sees."
+    )
 
 
 # --- EOS ----------------------------------------------------------------------
 
 
-def test_core_eos(client):
-    """core-eos: the model stops on its own EOS for a short, complete answer.
+def test_eos(client):
+    """eos: the model stops on its own EOS for a short, complete answer.
 
-    A bounded question with a one-word answer should finish with
-    `finish_reason="stop"`, not run to the token budget (`"length"`). Always
-    finishing with "length" points at a misconfigured `eos_token_id` / generation
-    config -- the served model never emits its stop token. The final content must
-    also carry no raw EOS/control token (the template/parser should consume it).
+    A bounded question should finish with `finish_reason="stop"`, not run to the
+    budget -- always finishing on "length" points at a misconfigured `eos_token_id` /
+    generation config. The content must also carry no raw EOS: the template/parser
+    should consume it.
     """
     resp = client.chat(
         [
@@ -379,25 +572,22 @@ def test_core_eos(client):
     )
     content = ChatClient.content(resp) or ""
     leak = _CONTROL_TOKEN_RE.search(content)
-    assert not leak, (
-        f"raw control/EOS token {leak.group(0)!r} leaked into content: {content!r}"
-    )
+    assert (
+        not leak
+    ), f"raw control/EOS token {leak.group(0)!r} leaked into content: {content!r}"
 
 
-def test_core_eos_not_appended_to_prompt(client):
-    """core-eos-not-appended: default tokenization must not append an EOS to a
+def test_eos_not_appended_to_prompt(client):
+    """eos-not-appended-to-prompt: default tokenization must not append an EOS to a
     raw prompt.
 
     The EOS-side mirror of the BOS ownership checks. A raw completion prompt is a
     prefix the model continues from; a tokenizer misconfigured with
-    `add_eos_token=True` appends the EOS, so the model sees a premature stop token
-    mid-context -> truncated or degenerate continuations. Asserts the last token of
-    a raw DEFAULT tokenization (no `add_special_tokens` sent) is not a control/EOS
-    token. (The thread noted #420 is BOS-only -- this pins that the EOS side stays
-    clean too.)
+    `add_eos_token=True` appends the EOS, so the model sees a premature stop
+    mid-context -> truncated or degenerate continuations.
     """
     try:
-        raw = client.tokenize("The capital of France is Paris")
+        raw = client.tokenize(_PROMPT)
     except ApiError as exc:
         pytest.skip(f"/tokenize not available: {exc}")
     if not raw:
@@ -407,7 +597,7 @@ def test_core_eos_not_appended_to_prompt(client):
     except ApiError as exc:
         pytest.skip(f"/detokenize not available: {exc}")
     assert not _CONTROL_TOKEN_RE.search(last), (
-        f"default tokenization appended a control/EOS token {last!r} to a raw "
-        f"prompt (last ids {raw[-3:]}). A completion prompt must not end in an EOS -- "
-        f"the model would see a premature stop mid-context."
+        f"default tokenization appended a control/EOS token {last!r} to a raw prompt "
+        f"(last ids {raw[-3:]}). A completion prompt must not end in an EOS -- the "
+        f"model would see a premature stop mid-context."
     )

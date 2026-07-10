@@ -42,6 +42,16 @@ _THINKING_MAX_TOKENS = 1024
 # `finish_reason="length"` is the double-BOS runaway signature, not a tight budget.
 _HARD_MAX_TOKENS = 4096
 
+# The hard, bounded-answer prompt the #420 runaway showed up on (medqa/math class).
+# Shared with the multimodal suite's `mm-no-degeneration-hard`, which sends this
+# SAME text with an attachment: same prompt, same budget, the modality is the only
+# variable, so a pass here plus a fail there isolates the multimodal path.
+_HARD_PROMPT = (
+    "A 45-year-old presents with sudden tearing chest pain radiating to the back, "
+    "unequal arm blood pressures, and a widened mediastinum on chest X-ray. Give "
+    "the single most likely diagnosis in one short sentence."
+)
+
 
 def test_core_health(client):
     """core-health: a basic completion returns non-empty content + usage."""
@@ -217,7 +227,8 @@ def test_core_no_degeneration(client):
 
     Config breakage (e.g. double-BOS) shows up as degeneration -- the output
     collapses into one token/phrase repeated far past any natural limit. This is
-    the end-to-end effect that `core-no-double-bos` catches at the token level.
+    the end-to-end effect of what the `special_tokens` suite catches at the token
+    level (`bos-single-in-chat`, `bos-single-in-raw-tokenize`).
     """
     resp = client.chat(
         [{"role": "user", "content": "Write two sentences about the ocean."}],
@@ -235,29 +246,24 @@ def test_core_no_degeneration_hard(client):
     emitted its stop token. `core-no-degeneration` uses an easy prompt and so misses
     it; this uses a hard, bounded-answer clinical prompt with a generous budget and
     asserts the model reaches a natural stop (`finish_reason="stop"`, not `"length"`)
-    and does not degenerate. This is the only end-to-end catch for the multimodal /
-    completion-path double-BOS that the `/tokenize` probes can only proxy. Answer
-    correctness is not asserted (the prompt is a vehicle, not a knowledge test); a
-    legitimately long answer that trips `finish_reason` can relax the budget.
+    and does not degenerate. Answer correctness is not asserted (the prompt is a
+    vehicle, not a knowledge test); a legitimately long answer that trips
+    `finish_reason` can relax the budget.
+
+    TEXT-ONLY, so it exercises the chat path the server tokenizes with a single BOS.
+    The multimodal path is where #420's doubling actually lives; `mm-no-degeneration-
+    hard` sends this same prompt with an attachment and is the end-to-end reproduction.
     """
     resp = client.chat(
-        [
-            {
-                "role": "user",
-                "content": "A 45-year-old presents with sudden tearing chest pain "
-                "radiating to the back, unequal arm blood pressures, and a widened "
-                "mediastinum on chest X-ray. Give the single most likely diagnosis "
-                "in one short sentence.",
-            }
-        ],
+        [{"role": "user", "content": _HARD_PROMPT}],
         max_tokens=_HARD_MAX_TOKENS,
     )
     finish = resp["choices"][0]["finish_reason"]
     content = ChatClient.content(resp) or ChatClient.reasoning_content(resp) or ""
     assert finish == "stop", (
-        f"hard prompt ran to finish_reason={finish!r} (budget {_HARD_MAX_TOKENS}) "
-        f"without stopping -- the runaway signature of a double-BOS on the "
-        f"chat/mm generation path (apertus-program #420). Tail: {content[-200:]!r}"
+        f"hard prompt ran to finish_reason={finish!r} without stopping (budget "
+        f"{_HARD_MAX_TOKENS}) -- the runaway signature of a prompt-tokenization bug, "
+        f"e.g. a doubled BOS. Tail: {content[-200:]!r}"
     )
     # A correct short answer that stopped is a pass -- reaching a natural stop IS
     # the signal here; only flag if longer output is actually degenerate.
