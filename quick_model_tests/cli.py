@@ -12,6 +12,7 @@ import sys
 
 _CAPABILITIES = [
     "core",
+    "special_tokens",
     "streaming",
     "tools",
     "multimodal",

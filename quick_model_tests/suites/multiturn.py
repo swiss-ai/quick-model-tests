@@ -1,4 +1,4 @@
-"""multiturn suite -- multi-turn conversation state. See SPEC.md 7.5.
+"""multiturn suite -- multi-turn conversation state. See SPEC.md 7.6.
 
 Deterministic via a sentinel the model can't guess: state a code early, ask for
 it later, assert the exact code comes back. mt-tools (a tool call mid-
@@ -18,7 +18,7 @@ SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?(?:think|inner_prefix|inner_suffi
 
 # Thinking-safe budget: a reasoning model burns tokens on a stripped `<think>`
 # block before the answer, so a tight max_tokens truncates mid-thought and
-# returns empty `content`. See core.py / SPEC.md 7.6.
+# returns empty `content`. See core.py / SPEC.md 7.7.
 _THINKING_MAX_TOKENS = 1024
 
 

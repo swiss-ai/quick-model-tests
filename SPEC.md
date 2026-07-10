@@ -85,8 +85,9 @@ quick-model-tests/
 ├── README.md                   # quickstart, points to SPEC
 ├── pyproject.toml              # package "quick_model_tests", deps: requests; dev: pytest
 ├── conftest.py                 # fixtures: client, config
-├── pytest.ini / [tool.pytest]  # markers: core, streaming, tools, multimodal,
-│                               #          multiturn, reasoning, robustness, perf
+├── pytest.ini / [tool.pytest]  # markers: core, special_tokens, streaming, tools,
+│                               #          multimodal, multiturn, reasoning,
+│                               #          robustness, perf
 ├── quick_model_tests/
 │   ├── __init__.py
 │   ├── config.py               # Config dataclass from env/flags
@@ -95,6 +96,7 @@ quick-model-tests/
 │   ├── assets/                 # tiny + large fixture image/audio files
 │   └── suites/
 │       ├── core.py
+│       ├── special_tokens.py   # BOS/EOS ownership (apertus-program #420)
 │       ├── streaming.py
 │       ├── tools.py
 │       ├── multimodal.py
@@ -170,10 +172,53 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | core-maxtokens | `max_tokens` honored | `max_tokens=16` | `completion_tokens` ≤ limit (+1); `finish_reason` ∈ {length, stop} |
 | core-stop | `stop` honored | `stop=["three"]` | output contains no stop string |
 | core-usage | Usage accounting | any | `total == prompt + completion`, all > 0 |
-| core-no-double-bos | No double-BOS on the `/completions` path (the OpenWebUI path) | discover the model's BOS from a rendered chat prompt (`/tokenize` chat form + `/detokenize`; the template emits it first), then send a BOS-prefixed prompt via `/completions` `prompt_logprobs` — all requests use server DEFAULTS; `add_special_tokens` is never sent (the suite judges default behavior, not client overrides) | **Model-agnostic.** first non-null prompt-token position is NOT a 2nd BOS — i.e. a chat-templated prompt (which hardcodes the BOS) doesn't get `<bos><bos>…` → degeneration (apertus-program #420). Skips when the model has no BOS (e.g. Qwen) or when `/tokenize`/`prompt_logprobs` aren't proxied. |
 | core-determinism | temp=0 stability | same req ×2 | byte-identical outputs (relax only if §9.5 proves the endpoint is nondeterministic) |
+| core-no-degeneration | Coherent output on an easy prompt | "write two sentences" | no word repeats ≥6× consecutively; no word is >50% of the output |
+| core-no-degeneration-hard | Hard prompt completes and stops | clinical vignette, bounded answer, `max_tokens=4096` | `finish_reason="stop"` (not `"length"`) and not degenerate — the end-to-end signature of the double-BOS runaway (apertus-program #420) |
 
-### 7.2 `streaming`
+### 7.2 `special_tokens` — BOS/EOS ownership
+
+Every check here is **token-level**: it reads back the server's DEFAULT
+tokenization (via `/tokenize`, `/detokenize`, or `/completions`
+`prompt_logprobs`) and asserts an invariant about the special tokens at the
+prompt's edges. No request in this suite sends `add_special_tokens` — the suite
+judges the server's default behavior, not what a client can override. All checks
+are **model-agnostic**: the BOS is discovered from a rendered chat prompt (the
+template emits it first), and a model with no BOS (e.g. Qwen) skips.
+
+> Background (apertus-program #420, raised by the SML eval team on vLLM 0.19):
+> a chat template that hardcodes `{{ bos_token }}` plus a server that also
+> auto-prepends BOS yields `<s><s>…` → text degeneration. The fix makes exactly
+> one layer the BOS owner *per path*. The over-correction matters as much as the
+> original bug: stripping the tokenizer's post-processor BOS fixes chat but
+> leaves `/completions` and lm-eval loglikelihood paths with no BOS at all →
+> train/inference mismatch. So these checks assert **exactly one**, never "at
+> most one", wherever a BOS is expected.
+
+| ID | Test | Pass criteria |
+|----|------|---------------|
+| core-bos-single-in-chat | chat path: template owns the BOS | rendered chat prompt starts with exactly 1 BOS |
+| core-no-double-bos-chat | chat path, tokenized with specials on top | ≤1 leading BOS (2 = the reported bug) |
+| core-no-double-bos | `/completions` path (the OpenWebUI path) | a BOS-prefixed prompt's first non-null `prompt_logprobs` position is NOT a 2nd BOS. Skips when `prompt_logprobs` isn't proxied |
+| core-no-double-bos-tokenize | same fault via `/tokenize` instead of `prompt_logprobs` (fires on gateways exposing only one) | ≤1 leading BOS |
+| core-bos-single-in-completion | raw path: tokenizer owns the BOS | raw default tokenization starts with exactly 1 BOS — 0 is the over-correction, 2 the original bug |
+| core-bos-single-token | the BOS *string* encodes to one BOS token | `tokenize(bos + text) == [bos_id] + tokenize(text)`; a split means template/tokenizer disagree |
+| core-bos-consistent-identity | chat and raw paths agree | same BOS id from both. Skips when the raw path prepends no BOS (`core-bos-single-in-completion` flags that) |
+| mm-bos-single-in-chat | image+text chat prompt — the exact mm path #420 was reported on (vLLM restores `add_special_tokens=True` via `default_tok_params`) | exactly 1 leading BOS |
+| mm-bos-single-in-chat-audio | audio+text chat prompt (same `default_tok_params` path) | exactly 1 leading BOS |
+| core-eos | model stops on its own EOS | short bounded question → `finish_reason="stop"`, no raw control/EOS token in `content` |
+| core-eos-not-appended | EOS-side mirror of the BOS checks | raw default tokenization does not append a control/EOS token (`add_eos_token=True` would put a premature stop mid-context) |
+
+The **end-to-end** counterpart — degeneration and runaway generation, the symptom
+a double-BOS actually produces — lives in `core`
+(`core-no-degeneration{,-hard}`), since degeneration has causes beyond a doubled
+BOS.
+
+> Note: these checks carry the `special_tokens` marker, so `--capability core`
+> and `--capability multimodal` no longer run them. The default run (all
+> capabilities) is unchanged; CI gates on `--capability core,special_tokens`.
+
+### 7.3 `streaming`
 > Note (2026-06): the swissai endpoint does **not** emit a `data: [DONE]`
 > sentinel — it terminates the stream with a usage chunk (`choices: []`,
 > `usage: {...}`). stream-basic accepts either terminal convention.
@@ -185,7 +230,7 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | stream-stop | streaming respects `stop` / `max_tokens` (token bound / no stop string) |
 | stream-equiv | concatenated stream == non-stream `content` for same temp=0 prompt. **NOT implemented yet** — depends on temp=0 determinism (open question 5), unconfirmed for this endpoint. |
 
-### 7.3 `tools` — function calling (OAI tools schema; see tokenizer repo PR #3)
+### 7.4 `tools` — function calling (OAI tools schema; see tokenizer repo PR #3)
 > Target a tool-capable model, e.g. `swiss-ai/Apertus-1.5-8B-Instruct-sft-dpo-tools`.
 > The suite probes once (`tools_supported` fixture) and **hard-fails** when the
 > configured model does not emit `tool_calls` when forced (no silent skips; the
@@ -212,7 +257,7 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | tools-stream | streamed tool-call arg deltas accumulate to JSON-parseable `arguments` (the final SSE chunk carries `usage` with an empty `choices` list — guard it) |
 | tools-none | tools offered but prompt irrelevant → normal content, `tool_calls` absent/empty |
 
-### 7.4 `multimodal`
+### 7.5 `multimodal`
 > Input format RESOLVED (2026-06, §9.1). The endpoint takes OpenAI-style content
 > parts:
 > - image: `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`
@@ -241,14 +286,14 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | mm-audio-large | large audio accepted → 200, well-formed |
 | mm-interleaved | text+image(+audio) in one message → 200, well-formed, no token leak |
 
-### 7.5 `multiturn`
+### 7.6 `multiturn`
 | ID | Test | Pass criteria |
 |----|------|---------------|
 | mt-context | turn 1 states sentinel `"my code is 4827"`; turn 3 asks for it → `"4827"` in final content |
 | mt-tools | tool call mid-conversation returns sentinel; a later turn's content contains it |
 | mt-roles | alternating user/assistant history → 200, well-formed, no role bleed / special-token leak |
 
-### 7.6 `reasoning` — `<think>` / `<|inner_prefix|>` path (reasoning-parser proof)
+### 7.7 `reasoning` — `<think>` / `<|inner_prefix|>` path (reasoning-parser proof)
 > Apertus 1.5 wraps chain-of-thought between `<|inner_prefix|>` … `<|inner_suffix|>`
 > (ids 32/33; `<think>`/`</think>` alias). The server-side **reasoning parser**
 > (vLLM `--reasoning-parser qwen3`, the SGLang equivalent) splits that raw stream
@@ -293,7 +338,7 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 | reason-tools | reasoning- + tool-parser cooperation | reasoning prompt + one tool offered (forced) → the call lands in `tool_calls` with JSON-parseable `arguments`; neither `content` nor `reasoning_content` contains raw tool JSON / `<|tools_prefix|>` scaffolding. Skipped unless BOTH reasoning and tools are supported |
 | reason-disabled | parser respects the think toggle | `chat_template_kwargs={"enable_thinking": false}` → `reasoning_content` absent/empty AND answer still correct. Skipped if the endpoint ignores the kwarg (keeps thinking) |
 
-### 7.7 `robustness` — chat-template injection surface
+### 7.8 `robustness` — chat-template injection surface
 | ID | Test | Pass criteria |
 |----|------|---------------|
 | robust-specialtokens | user content containing `<|assistant_end|>`, `<think>`, `<|inner_prefix|>` → 200, no rendering break, no role escape, no token leak in output |
@@ -322,14 +367,14 @@ known sentinel / closed set — phrased in the "Pass criteria" column.
 ## 9. Open questions — PROBE THE LIVE API FIRST
 
 Resolve these empirically before writing the dependent suites, then update
-sections 7.4 / 7.6 with the real formats:
+sections 7.5 / 7.7 with the real formats:
 
 1. **Multimodal input format.** RESOLVED (2026-06): yes, OpenAI-style
    `content: [{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]`
    works; audio uses `{"type":"audio_url","audio_url":{"url":"data:audio/wav;base64,..."}}`
    (a swissai extension, not OpenAI's `input_audio`). Confirmed against
    `swiss-ai/Apertus-1.5-8B-SFT-RL-DPO-SDPO-Mix-Less-Refuse-Feedback`: reads a
-   numeric sentinel from an image and transcribes a wav clip. See §7.4.
+   numeric sentinel from an image and transcribes a wav clip. See §7.5.
 2. **Reasoning surfacing.** RESOLVED (2026-06): thinking is returned in a
    separate `reasoning_content` field (vLLM `--reasoning-parser qwen3`), NOT
    inline `<think>` tags in `content`. **Launch config (two distinct flags):**
@@ -341,7 +386,7 @@ sections 7.4 / 7.6 with the real formats:
    no thinking, so no reasoning is produced regardless of the parser.
    Caveat: the swissai gateway was *dropping* that field (Pydantic
    `extra="ignore"`); fixed in serving-api. Now that the
-   field is surfaced, §7.6 asserts the **reasoning parser's split directly**:
+   field is surfaced, §7.7 asserts the **reasoning parser's split directly**:
    both channels populated (reason-produced), each channel free of raw boundary
    tokens (reason-separation / reason-clean-channel), the streaming reasoning→
    answer boundary monotonic (reason-stream), and reasoning- + tool-parser
@@ -354,7 +399,7 @@ sections 7.4 / 7.6 with the real formats:
    chunk has empty `choices` + `usage`). **Open/broken:** parallel calls
    unsupported (2-target prompt → 1 call), and the multi-turn round-trip 400s
    when an assistant `tool_calls` turn is echoed back ("can only concatenate str
-   (not dict) to str" — server chat-template bug). See §7.3; `tools-multiturn` is
+   (not dict) to str" — server chat-template bug). See §7.4; `tools-multiturn` is
    `xfail` and `tools-parallel` skips until these are fixed server-side.
 4. **Capability matrix per model.** ADDRESSED: capabilities and tests are one
    thing. `quick-model-tests` runs the suites and renders a `✔/✗/⚠` table

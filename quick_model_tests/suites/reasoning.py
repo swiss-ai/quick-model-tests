@@ -1,4 +1,4 @@
-"""reasoning suite -- proves the server-side REASONING PARSER works. See SPEC.md 7.6.
+"""reasoning suite -- proves the server-side REASONING PARSER works. See SPEC.md 7.7.
 
 Apertus 1.5 wraps chain-of-thought between `<|inner_prefix|>` ... `<|inner_suffix|>`.
 The reasoning parser (vLLM `--reasoning-parser qwen3`, SGLang equivalent) splits
@@ -19,7 +19,7 @@ Launch requirement -- two distinct flags, easy to conflate:
     unrelated to the enable_thinking kwarg.
 Miss the enable_thinking default and no `reasoning_content` is produced at all.
 
-Gating: surfacing is model- AND launch-dependent (SPEC.md 7.6 / open question 2).
+Gating: surfacing is model- AND launch-dependent (SPEC.md 7.7 / open question 2).
 The `reasoning_supported` probe runs once; on an endpoint that exposes no
 `reasoning_content` channel (a plain instruct model, a missing launch flag, or a
 gateway dropping the field) the parser-specific checks SKIP with a clear reason
@@ -81,7 +81,7 @@ def reasoning_supported(client):
     channel? Returns the probe response (reused by reason-produced to avoid a
     second call). SKIP (not fail) the parser-specific checks when no channel is
     surfaced -- a plain model or a gateway that drops the field is a visible
-    skip, not a red failure (SPEC.md 7.6 / section 8)."""
+    skip, not a red failure (SPEC.md 7.7 / section 8)."""
     resp = client.chat(
         [{"role": "user", "content": REASONING_PROMPT}], max_tokens=REASON_MAX_TOKENS
     )

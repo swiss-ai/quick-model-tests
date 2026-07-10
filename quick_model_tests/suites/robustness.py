@@ -1,4 +1,4 @@
-"""robustness suite -- chat-template injection & error paths. See SPEC.md 7.7.
+"""robustness suite -- chat-template injection & error paths. See SPEC.md 7.8.
 
 Deterministic structural checks: status codes, special-token leakage (regex),
 sentinel membership, Unicode round-trip. These probe the serving/template layer's
@@ -23,7 +23,7 @@ SPECIAL_TOKEN_RE = re.compile(
 # block before the answer, so a tight max_tokens truncates mid-thought and
 # returns empty `content`. Used by the checks that assert real output; the
 # error-path checks (robust-empty, robust-errors) keep their own small budget.
-# See core.py / SPEC.md 7.6.
+# See core.py / SPEC.md 7.7.
 _THINKING_MAX_TOKENS = 1024
 
 

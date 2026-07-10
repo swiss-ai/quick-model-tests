@@ -48,11 +48,11 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
-      - name: Run core suite against endpoint
+      - name: Run core + special_tokens suites against endpoint
         env:
           CSCS_SERVING_API: ${{ secrets.CSCS_SERVING_API }}
         run: |
           if [ -z "$CSCS_SERVING_API" ]; then
             echo "no endpoint secret configured; skipping live suite"; exit 0
           fi
-          quick-model-tests --capability core --junit junit.xml
+          quick-model-tests --capability core,special_tokens --junit junit.xml

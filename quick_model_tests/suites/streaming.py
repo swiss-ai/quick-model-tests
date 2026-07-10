@@ -23,7 +23,7 @@ pytestmark = pytest.mark.streaming
 
 # Thinking-safe budget: a reasoning model streams a stripped `<think>` block
 # before any `content` delta, so a tight max_tokens yields an empty concatenated
-# stream. See core.py / SPEC.md 7.6.
+# stream. See core.py / SPEC.md 7.7.
 _THINKING_MAX_TOKENS = 1024
 
 

@@ -20,6 +20,7 @@ from quick_model_tests.config import Config
 # launched against the installed package, where pyproject.toml is not on disk.
 _MARKERS = {
     "core": "API contract basics",
+    "special_tokens": "BOS/EOS ownership across tokenization paths",
     "streaming": "SSE streaming behavior",
     "tools": "function / tool calling",
     "multimodal": "image and audio inputs",

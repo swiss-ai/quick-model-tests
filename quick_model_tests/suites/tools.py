@@ -1,4 +1,4 @@
-"""tools suite -- OpenAI-compatible function / tool calling. See SPEC.md 7.3.
+"""tools suite -- OpenAI-compatible function / tool calling. See SPEC.md 7.4.
 
 Deterministic structural checks only (see SPEC.md section 6): tool-call shape,
 JSON-parseable `arguments`, required-key presence, closed-set sentinels. No
@@ -20,7 +20,7 @@ Probed wire behavior (2026-06, sft-dpo-tools model):
     with "can only concatenate str (not dict) to str" (server chat-template bug)
   - TOOL-MARKUP LEAK: FAIL -- with an agentic system prompt the model emits its
     tool intent as `<info>`/`<bash>` text in `content` with EMPTY tool_calls,
-    instead of a structured call (breaks opencode etc.). See SPEC.md 7.3 / 7.7.
+    instead of a structured call (breaks opencode etc.). See SPEC.md 7.4 / 7.8.
 """
 
 import json
@@ -212,7 +212,7 @@ def test_tools_parallel(client, tools_supported):
     HARD FAIL when the model emits a single call. Parallel calling is currently
     unsupported on the -tools build (2-target prompt -> 1 call), so this fails
     today by design -- the gap is a red failure, not a hidden skip. See SPEC.md
-    7.3 / open question 3.
+    7.4 / open question 3.
     """
     resp = client.chat(
         [
@@ -240,7 +240,7 @@ def test_tools_multiturn(client, tools_supported):
     HARD FAIL today: the round-trip 400s the moment the assistant tool-call turn
     is re-sent (server chat-template bug, "can only concatenate str (not dict) to
     str"), so the model never sees the sentinel. This is a real, loud failure
-    until the served template is fixed -- not a skip or xfail. See SPEC.md 7.3.
+    until the served template is fixed -- not a skip or xfail. See SPEC.md 7.4.
     """
     messages = [
         {"role": "user", "content": "Look up the code for 'alpha'. Use the tool."}
@@ -313,7 +313,7 @@ def test_tools_followup(client, tools_supported):
 # Agentic system prompt that triggers the Apertus-1.5 `-tools` leak: instead of a
 # structured tool call, the model emits `<info>...</info>` / `<bash>...</bash>`
 # tool intent as plain content with EMPTY tool_calls -- so agents (opencode etc.)
-# never execute anything. See module docstring and SPEC.md 7.3 / 7.7.
+# never execute anything. See module docstring and SPEC.md 7.4 / 7.8.
 _AGENT_SYS = (
     "You are an autonomous coding agent operating in a terminal. You have a "
     "`bash` tool. When the user asks you to inspect or change the filesystem, "
@@ -345,7 +345,7 @@ def test_tools_no_content_leak(client, tools_supported):
     and under opencode's protocol leaks `<info>...</info>` markup -- i.e. the
     served tool-call parser is not cleanly separating tool scaffolding from
     content, so agents render junk / execute nothing. Qwen3.5 returns
-    content=None here. SPEC.md line 148-149 / 7.7.
+    content=None here. SPEC.md line 148-149 / 7.8.
     """
     resp = client.chat(
         [

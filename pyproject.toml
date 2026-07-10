@@ -36,6 +36,7 @@ testpaths = ["quick_model_tests/suites"]
 python_files = ["*.py"]
 markers = [
     "core: API contract basics",
+    "special_tokens: BOS/EOS ownership across tokenization paths",
     "streaming: SSE streaming behavior",
     "tools: function / tool calling",
     "multimodal: image and audio inputs",
