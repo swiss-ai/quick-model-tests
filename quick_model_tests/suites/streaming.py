@@ -139,5 +139,5 @@ def test_stream_equiv(client):
     if not non_stream and not streamed:
         pytest.skip("no content in either path to compare")
     assert streamed == non_stream, (
-        f"stream vs non-stream content differ at temp=0: stream={streamed!r}\n  non-stream={non_stream!r} ."
+        f"stream vs non-stream content differ at temp=0: stream={streamed!r}    non-stream={non_stream!r}    ."
     )
