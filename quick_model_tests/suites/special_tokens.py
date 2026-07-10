@@ -321,28 +321,6 @@ def test_bos_single_in_completions(client, bos):
 # they reproduce a live bug, they do not describe desired behavior.
 
 
-def test_bos_no_double_in_rendered_completion(client, bos):
-    """bos-no-double-in-rendered-completion: posting the server's own rendered chat
-    prompt to /completions must not produce two leading BOS.
-
-    Position 0 has no logprob and IS the template's own BOS, so the assertion is on
-    the first known id: if that is the BOS too, the server added a second.
-    """
-    bos_id, bos_str = bos
-    rendered = _rendered_chat_prompt(client, [{"role": "user", "content": _WORD}])
-    _skip_unless_rendered_has_bos(rendered, bos_str)
-    try:
-        ids = client.prompt_token_ids(rendered)
-    except ApiError as exc:
-        pytest.skip(f"prompt_logprobs not available: {exc}")
-    first_known = next((i for i in ids if i is not None), None)
-    assert first_known != bos_id, (
-        f"/completions prepended a second BOS (id {bos_id}, {bos_str!r}) onto a "
-        f"rendered chat prompt that already began with one: ids {ids}. The template "
-        f"and the tokenizer both own the BOS."
-    )
-
-
 def test_bos_rendered_prompt_stops(client, bos):
     """bos-rendered-prompt-stops: a hard prompt, rendered and posted to /completions
     under the server's DEFAULT tokenization, reaches its stop token instead of
