@@ -8,3 +8,4 @@ dist/
 *.xml
 
 .sandbox.sh
+/tests/
