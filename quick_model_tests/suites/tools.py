@@ -108,7 +108,12 @@ def tools_supported(client):
     """
     try:
         resp = client.chat(
-            [{"role": "user", "content": "What is the weather in Paris? Use the tool."}],
+            [
+                {
+                    "role": "user",
+                    "content": "What is the weather in Paris? Use the tool.",
+                }
+            ],
             # generous budget: a reasoning model may think before it tool-calls
             tools=[WEATHER_TOOL],
             max_tokens=256,
@@ -410,7 +415,12 @@ def test_tools_arg_schema(client, tools_supported):
     the enum value legal, the nested object shaped right.
     """
     resp = client.chat(
-        [{"role": "user", "content": "Book a business-class flight to Tokyo for Alice."}],
+        [
+            {
+                "role": "user",
+                "content": "Book a business-class flight to Tokyo for Alice.",
+            }
+        ],
         tools=[_SCHEMA_TOOL],
         tool_choice="required",
         max_tokens=512,
@@ -464,7 +474,9 @@ def test_tools_empty_args(client, tools_supported):
             f"empty-arg call arguments not JSON-parseable ({exc}); expected '{{}}', "
             f"got {raw!r} (breaks strict OpenAI clients)"
         )
-    assert isinstance(args, dict), f"expected a JSON object for empty args, got: {args!r}"
+    assert isinstance(args, dict), (
+        f"expected a JSON object for empty args, got: {args!r}"
+    )
 
 
 def test_tools_phantom(client, tools_supported):

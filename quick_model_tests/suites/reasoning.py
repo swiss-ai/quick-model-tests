@@ -139,9 +139,9 @@ def test_reason_produced(reasoning_supported):
     reasoning = ChatClient.reasoning_content(resp) or ""
     content = ChatClient.content(resp) or ""
     assert reasoning.strip(), "reasoning_content empty -- parser produced no thinking"
-    assert (
-        content.strip()
-    ), "content empty -- parser swallowed the answer into reasoning_content"
+    assert content.strip(), (
+        "content empty -- parser swallowed the answer into reasoning_content"
+    )
 
 
 def test_reason_separation(client):
@@ -164,9 +164,9 @@ def test_reason_separation(client):
     )
     assert content.strip(), "empty content"
     leak = THINK_TOKEN_RE.search(content)
-    assert (
-        not leak
-    ), f"raw reasoning token {leak.group(0)!r} leaked into content: {content!r}"
+    assert not leak, (
+        f"raw reasoning token {leak.group(0)!r} leaked into content: {content!r}"
+    )
 
 
 def test_reason_clean_channel(reasoning_supported):
@@ -230,12 +230,12 @@ def test_reason_stream(client, reasoning_supported):
 
     assert reasoning.strip(), "no streamed reasoning_content deltas"
     assert content.strip(), "no streamed content deltas"
-    assert (
-        not reasoning_after_content
-    ), "reasoning_content resumed after content began -- boundary is not monotonic"
-    assert (
-        ANSWER_SENTINEL in content
-    ), f"expected {ANSWER_SENTINEL!r} in streamed content, got: {content!r}"
+    assert not reasoning_after_content, (
+        "reasoning_content resumed after content began -- boundary is not monotonic"
+    )
+    assert ANSWER_SENTINEL in content, (
+        f"expected {ANSWER_SENTINEL!r} in streamed content, got: {content!r}"
+    )
     for name, chan in (("reasoning_content", reasoning), ("content", content)):
         leak = THINK_TOKEN_RE.search(chan)
         assert not leak, f"raw token {leak.group(0)!r} leaked into streamed {name}"
@@ -276,9 +276,9 @@ def test_reason_tools(client, reasoning_supported):
     for name in ("content", "reasoning_content", "reasoning"):
         chan = resp["choices"][0]["message"].get(name) or ""
         leak = THINK_TOKEN_RE.search(chan)
-        assert (
-            not leak
-        ), f"tool/boundary scaffolding {leak.group(0)!r} leaked into {name}"
+        assert not leak, (
+            f"tool/boundary scaffolding {leak.group(0)!r} leaked into {name}"
+        )
 
 
 # An agentic system prompt plus an offered tool is the shape that provoked the
@@ -376,7 +376,9 @@ def test_reason_nothink_no_inner_leak_sampled(client):
                 },
             )
         except ApiError as exc:
-            pytest.skip(f"endpoint rejected enable_thinking / skip_special_tokens: {exc}")
+            pytest.skip(
+                f"endpoint rejected enable_thinking / skip_special_tokens: {exc}"
+            )
         content = ChatClient.content(resp) or ""
         leak = next((d for d in _REASON_DELIMS if d in content), None)
         assert not leak, (

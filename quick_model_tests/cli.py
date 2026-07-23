@@ -46,6 +46,15 @@ def main(argv=None) -> int:
         help="in a multi-model comparison, list the failure reasons",
     )
     p.add_argument(
+        "--spec",
+        type=str.lower,
+        choices=["openai", "dev"],
+        default="openai",
+        help="API surface to test: 'openai' (default) runs only checks the "
+        "OpenAI API spec can serve; 'dev' adds checks that need extension "
+        "endpoints like /tokenize and /detokenize",
+    )
+    p.add_argument(
         "--record-responses",
         metavar="DIR",
         dest="record_dir",
@@ -90,9 +99,11 @@ def main(argv=None) -> int:
     if len(models) > 1:
         cfgs = [dataclasses.replace(base, model=m) for m in models]
         return report_compare(
-            cfgs, capability=cap, as_json=args.json, detail=args.detail
+            cfgs, capability=cap, spec=args.spec, as_json=args.json, detail=args.detail
         )
-    return report(base, capability=cap, as_json=args.json, junit=args.junit)
+    return report(
+        base, capability=cap, spec=args.spec, as_json=args.json, junit=args.junit
+    )
 
 
 if __name__ == "__main__":

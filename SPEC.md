@@ -114,13 +114,24 @@ raw behavior. Minimum surface:
 ```python
 class ChatClient:
     def __init__(self, config: Config): ...
-    def chat(self, messages, *, tools=None, tool_choice=None,
-             max_tokens=None, stop=None, temperature=0.0,
-             response_format=None, extra=None) -> dict:
+    def chat(
+        self,
+        messages,
+        *,
+        tools=None,
+        tool_choice=None,
+        max_tokens=None,
+        stop=None,
+        temperature=0.0,
+        response_format=None,
+        extra=None,
+    ) -> dict:
         """POST /chat/completions, stream=False. Returns parsed JSON.
         Raises ApiError(status, body) on non-2xx."""
+
     def stream(self, messages, **kw) -> Iterator[dict]:
         """stream=True. Yields parsed SSE delta chunks; stops on [DONE]."""
+
     def raw(self, payload: dict) -> requests.Response:
         """Escape hatch for malformed-request / error-path tests."""
 ```

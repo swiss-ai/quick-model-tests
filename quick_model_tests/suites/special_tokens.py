@@ -226,6 +226,7 @@ def _assert_single_bos_in_mm_chat(client, bos, part, kind):
 # --- BOS: the chat path (template owns the BOS) -------------------------------
 
 
+@pytest.mark.dev
 def test_bos_single_in_chat(client, bos):
     """bos-single-in-chat: a chat-templated prompt begins with exactly one BOS.
 
@@ -243,11 +244,13 @@ def test_bos_single_in_chat(client, bos):
         _assert_exactly_one_leading_bos(ids, bos, f"{shape} chat prompt")
 
 
+@pytest.mark.dev
 def test_bos_single_in_mm_chat(client, bos):
     """bos-single-in-mm-chat: an image+text chat prompt begins with exactly one BOS."""
     _assert_single_bos_in_mm_chat(client, bos, _image("image_4827.png"), "image")
 
 
+@pytest.mark.dev
 def test_bos_single_in_mm_chat_audio(client, bos):
     """bos-single-in-mm-chat-audio: an audio+text chat prompt begins with one BOS.
 
@@ -259,6 +262,7 @@ def test_bos_single_in_mm_chat_audio(client, bos):
 # --- BOS: the raw / completion path (tokenizer owns the BOS) ------------------
 
 
+@pytest.mark.dev
 def test_bos_single_in_raw_tokenize(client, bos):
     """bos-single-in-raw-tokenize: raw (non-chat) /tokenize supplies exactly one BOS.
 
@@ -274,6 +278,7 @@ def test_bos_single_in_raw_tokenize(client, bos):
     _assert_exactly_one_leading_bos(raw, bos, "default raw tokenization")
 
 
+@pytest.mark.dev
 def test_bos_single_in_completions(client, bos):
     """bos-single-in-completions: the /completions DEFAULT supplies exactly one BOS.
 
@@ -321,6 +326,7 @@ def test_bos_single_in_completions(client, bos):
 # they reproduce a live bug, they do not describe desired behavior.
 
 
+@pytest.mark.dev
 def test_bos_rendered_prompt_stops(client, bos):
     """bos-rendered-prompt-stops: a hard prompt, rendered and posted to /completions
     under the server's DEFAULT tokenization, reaches its stop token instead of
@@ -362,6 +368,7 @@ def test_bos_rendered_prompt_stops(client, bos):
 # --- BOS: the paths must agree -------------------------------------------------
 
 
+@pytest.mark.dev
 def test_bos_single_token(client, bos):
     """bos-single-token: the model's BOS string encodes to exactly one BOS token.
 
@@ -383,6 +390,7 @@ def test_bos_single_token(client, bos):
     )
 
 
+@pytest.mark.dev
 def test_bos_consistent_identity(client, bos):
     """bos-consistent-identity: the chat and raw paths agree on the BOS token.
 
@@ -405,6 +413,7 @@ def test_bos_consistent_identity(client, bos):
     )
 
 
+@pytest.mark.dev
 def test_bos_generation_matches_tokenize(client, bos):
     """bos-generation-matches-tokenize: the prompt the model consumed has the same
     token count as `/tokenize`'s chat form.
@@ -463,11 +472,12 @@ def test_eos(client):
     )
     content = ChatClient.content(resp) or ""
     leak = _CONTROL_TOKEN_RE.search(content)
-    assert (
-        not leak
-    ), f"raw control/EOS token {leak.group(0)!r} leaked into content: {content!r}"
+    assert not leak, (
+        f"raw control/EOS token {leak.group(0)!r} leaked into content: {content!r}"
+    )
 
 
+@pytest.mark.dev
 def test_eos_not_appended_to_prompt(client):
     """eos-not-appended-to-prompt: default tokenization must not append an EOS to a
     raw prompt.
