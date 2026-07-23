@@ -28,6 +28,7 @@ _MARKERS = {
     "reasoning": "<think> / inner-monologue handling",
     "robustness": "chat-template injection & error paths",
     "perf": "performance smoke (excluded from default run)",
+    "dev": "needs non-OpenAI extension endpoints (/tokenize, /detokenize); included by --spec dev",
 }
 
 

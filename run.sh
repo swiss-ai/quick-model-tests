@@ -14,7 +14,7 @@
 # Inside a checkout (skip the git install, use the local tree):
 #   bash run.sh --local --suite core
 #
-# Flags: --suite a,b  --model ID  --base-url URL  --junit PATH  --local
+# Flags: --suite a,b  --model ID  --spec openai|dev  --base-url URL  --junit PATH  --local
 # Config via env: QMT_API_BASE, QMT_API_KEY|CSCS_SERVING_API,
 #                 QMT_MODEL, QMT_TIMEOUT.
 # See SPEC.md section 3.

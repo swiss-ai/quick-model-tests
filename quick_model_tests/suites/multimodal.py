@@ -37,7 +37,7 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets"
 # Special / control tokens that must never leak into user-visible content.
 SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?(?:think|info|bash)\b", re.IGNORECASE)
 
-MAX_TOKENS = 2 ** 14  # a generous budget for multimodal tests, see core.py / SPEC.md 7.7
+MAX_TOKENS = 2**14  # a generous budget for multimodal tests, see core.py / SPEC.md 7.7
 
 
 def _data_url(name: str, mime: str) -> str:

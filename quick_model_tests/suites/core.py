@@ -21,7 +21,9 @@ pytestmark = pytest.mark.core
 # tools_*, assistant_end, ...), `<s>`/`</s>`, Llama-style `[INST]`/`[/INST]`, and
 # raw `<think>` tags. Leakage means the served chat template / parser is not
 # cleanly separating structure from content.
-_CONTROL_TOKEN_RE = re.compile(r"<\|[^>]*\|>|</?s>|\[/?INST\]|</?think\b", re.IGNORECASE)
+_CONTROL_TOKEN_RE = re.compile(
+    r"<\|[^>]*\|>|</?s>|\[/?INST\]|</?think\b", re.IGNORECASE
+)
 
 # The token-level BOS/EOS ownership checks live in the `special_tokens` suite
 # (apertus-program #420). What stays here is their end-to-end counterpart: a
@@ -115,12 +117,12 @@ def test_core_stop(client):
     reasoning = ChatClient.reasoning_content(resp) or ""
     finish = resp["choices"][0]["finish_reason"]
     assert "three" not in content, f"stop string leaked into content: {content!r}"
-    assert (
-        "three" not in reasoning
-    ), f"stop string leaked into reasoning_content: {reasoning!r}"
-    assert (
-        content.strip() or reasoning.strip() or finish == "stop"
-    ), f"no output in either channel and finish_reason={finish!r} (expected 'stop')"
+    assert "three" not in reasoning, (
+        f"stop string leaked into reasoning_content: {reasoning!r}"
+    )
+    assert content.strip() or reasoning.strip() or finish == "stop", (
+        f"no output in either channel and finish_reason={finish!r} (expected 'stop')"
+    )
 
 
 def test_core_usage(client):
@@ -150,7 +152,9 @@ def test_core_template_no_leak(client):
     # A thinking model may spend the whole budget in `reasoning` and leave
     # `content` empty; either channel counts as real output. Control tokens must
     # leak into NEITHER.
-    assert content.strip() or reasoning.strip(), "empty assistant output (both channels)"
+    assert content.strip() or reasoning.strip(), (
+        "empty assistant output (both channels)"
+    )
     for name, chan in (("content", content), ("reasoning", reasoning)):
         leak = _CONTROL_TOKEN_RE.search(chan)
         assert not leak, (
@@ -159,6 +163,7 @@ def test_core_template_no_leak(client):
         )
 
 
+@pytest.mark.dev
 def test_core_tokenizer_roundtrip(client):
     """core-tokenizer-roundtrip: detokenize(tokenize(text)) == text.
 
@@ -175,6 +180,7 @@ def test_core_tokenizer_roundtrip(client):
     assert back == text, f"tokenizer round-trip mismatch: {back!r} != {text!r}"
 
 
+@pytest.mark.dev
 def test_core_tokenizer_unicode(client):
     """core-tokenizer-unicode: multilingual/emoji/RTL text round-trips intact.
 
@@ -349,9 +355,14 @@ def test_core_determinism(client):
     """
 
     def _visible(resp: dict) -> tuple:
-        return (ChatClient.content(resp) or "", ChatClient.reasoning_content(resp) or "")
+        return (
+            ChatClient.content(resp) or "",
+            ChatClient.reasoning_content(resp) or "",
+        )
 
-    prompt = [{"role": "user", "content": "Name three primary colors, comma-separated."}]
+    prompt = [
+        {"role": "user", "content": "Name three primary colors, comma-separated."}
+    ]
     a = _visible(client.chat(prompt, max_tokens=_THINKING_MAX_TOKENS))
     b = _visible(client.chat(prompt, max_tokens=_THINKING_MAX_TOKENS))
     if not any(a):

@@ -15,6 +15,13 @@ Scope to specific areas and pick a model:
 curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run.sh | bash -s -- --model swiss-ai/Apertus-8B-Instruct-2509
 ```
 
+The default run tests the **OpenAI API surface only** (`--spec openai`):
+checks that need extension endpoints the OpenAI spec does not define --
+`/tokenize`, `/detokenize` (the tokenizer-roundtrip and BOS token-identity
+suites) -- are excluded. Run `--spec dev` against endpoints that expose those
+extensions (e.g. vLLM/SGLang directly, or a gateway that forwards them) to add
+them.
+
 Every check is **deterministic** (status codes, response schema, token counts,
 substring / regex / closed-set membership) — there is intentionally no
 LLM-as-judge. Semantic/quality evaluation belongs in LLM evals, not in a
@@ -26,9 +33,10 @@ One command. It runs the deterministic suites against a model and prints a
 **✔/✗ capability table**, exiting non-zero on any failure.
 
 ```bash
-quick-model-tests                              # run ALL checks, default model
+quick-model-tests                              # OpenAI-spec checks, default model
 quick-model-tests --model swiss-ai/Apertus-1.5-8B-Instruct-sft-dpo-tools
 quick-model-tests --capability tools           # just one capability
+quick-model-tests --spec dev                   # + checks needing /tokenize etc.
 quick-model-tests --model A --model B          # compare models (table)
 quick-model-tests --model A --model B --detail # + per-model failure reasons
 quick-model-tests --json                       # machine-readable

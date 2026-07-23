@@ -13,6 +13,8 @@ Status per check, derived from the pytest outcome:
     – skip    the check was skipped (capability not applicable)
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -37,7 +39,7 @@ class Result:
 def _check_name(nodeid: str) -> str:
     """ ".../tools.py::test_tools_parallel" -> "tools_parallel"."""
     func = nodeid.split("::")[-1]
-    return func[len("test_") :] if func.startswith("test_") else func
+    return func.removeprefix("test_")
 
 
 def _crash_message(report) -> str:
@@ -100,15 +102,30 @@ class _Collector:
         return list(self._by_name.values())
 
 
-def run_checks(config: Config, capability: str = None, junit: str = None) -> list:
-    """Run the suites against `config`'s model; return a list of Result."""
+def run_checks(
+    config: Config,
+    capability: str | None = None,
+    spec: str = "openai",
+    junit: str | None = None,
+) -> list:
+    """Run the suites against `config`'s model; return a list of Result.
+
+    `spec` picks the API surface under test: "openai" (default) excludes
+    checks marked `dev` (they need extension endpoints such as /tokenize and
+    /detokenize that the OpenAI API spec does not define); "dev" includes
+    them. Explicitly requesting the capability (e.g. --capability
+    special_tokens) does NOT override the spec filter -- pass --spec dev.
+    """
     os.environ["QMT_MODEL"] = config.model
     os.environ["QMT_API_BASE"] = config.api_base
     if config.api_key:
         os.environ["QMT_API_KEY"] = config.api_key
 
     args = [_SUITES_DIR, "-o", "python_files=*.py", "-p", "no:cacheprovider", "-q"]
-    args += ["-m", capability if capability else "not perf"]
+    marker = f"({capability})" if capability else "not perf"
+    if spec != "dev":
+        marker = f"({marker}) and not dev"
+    args += ["-m", marker]
     if junit:
         args += [f"--junitxml={junit}"]
 
@@ -126,9 +143,13 @@ def _exit_code(results) -> int:
 
 
 def report(
-    config: Config, capability: str = None, as_json: bool = False, junit: str = None
+    config: Config,
+    capability: str | None = None,
+    spec: str = "openai",
+    as_json: bool = False,
+    junit: str | None = None,
 ) -> int:
-    results = run_checks(config, capability, junit)
+    results = run_checks(config, capability, spec, junit)
     if as_json:
         print(
             json.dumps(
@@ -161,12 +182,18 @@ def report(
 
 
 def report_compare(
-    configs: list, capability: str = None, as_json: bool = False, detail: bool = False
+    configs: list,
+    capability: str | None = None,
+    spec: str = "openai",
+    as_json: bool = False,
+    detail: bool = False,
 ) -> int:
     """Compare >=2 models. Transposed table (checks down, models across) with one
     glyph per cell; columns M1/M2/... keep it narrow, full ids in a legend. With
     detail=True, failure reasons are listed as per-model footnotes."""
-    runs = [(c.model, {r.name: r for r in run_checks(c, capability)}) for c in configs]
+    runs = [
+        (c.model, {r.name: r for r in run_checks(c, capability, spec)}) for c in configs
+    ]
     names = []
     for _, res in runs:
         for n in res:

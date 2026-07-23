@@ -5,9 +5,10 @@ raw wire behavior (SSE framing, tool_calls JSON, error bodies) is itself under
 test. See SPEC.md section 5.
 """
 
+from __future__ import annotations
+
 import json
 from collections.abc import Iterator
-from typing import Optional
 
 import requests
 
@@ -15,7 +16,7 @@ from . import recording
 from .config import Config
 
 
-def _record_iter_lines(resp: "requests.Response") -> None:
+def _record_iter_lines(resp: requests.Response) -> None:
     """Wrap ``resp.iter_lines`` so the streamed SSE body is recorded as the
     consumer drains it. Records on normal exhaustion or early close (finally),
     while the test context is still active. No-op when recording is off."""
@@ -88,7 +89,9 @@ class ChatClient:
             payload.update(extra)
         return payload
 
-    def _post(self, path: str, body: dict, *, stream: bool = False) -> requests.Response:
+    def _post(
+        self, path: str, body: dict, *, stream: bool = False
+    ) -> requests.Response:
         """POST ``body`` to ``path``, recording the request and (non-stream)
         response so every endpoint the suite touches -- /tokenize, /detokenize,
         /completions -- shows up under ``--record-responses``, not just
@@ -187,7 +190,7 @@ class ChatClient:
             raise ApiError(resp.status_code, "endpoint returned no prompt_logprobs")
         return [int(next(iter(e))) if e else None for e in pl[:n]]
 
-    def tokenize(self, prompt: str, add_special_tokens: Optional[bool] = None) -> list:
+    def tokenize(self, prompt: str, add_special_tokens: bool | None = None) -> list:
         """Token ids for ``prompt`` via the ``/tokenize`` endpoint.
 
         By default ``add_special_tokens`` is NOT sent, so the result reflects the
@@ -233,7 +236,7 @@ class ChatClient:
     # -- convenience helpers used by suites ---------------------------------
 
     @staticmethod
-    def content(response: dict) -> Optional[str]:
+    def content(response: dict) -> str | None:
         return response["choices"][0]["message"].get("content")
 
     # Field names different stacks use for the separate reasoning channel:
@@ -242,7 +245,7 @@ class ChatClient:
     _REASONING_KEYS = ("reasoning_content", "reasoning")
 
     @staticmethod
-    def reasoning_content(response: dict) -> Optional[str]:
+    def reasoning_content(response: dict) -> str | None:
         """The separate reasoning channel a reasoning-parser populates, or None.
 
         Surfaced under different field names by different stacks (see
@@ -252,7 +255,7 @@ class ChatClient:
         return next((msg[k] for k in ChatClient._REASONING_KEYS if msg.get(k)), None)
 
     @staticmethod
-    def reasoning_delta(delta: dict) -> Optional[str]:
+    def reasoning_delta(delta: dict) -> str | None:
         """The reasoning piece from a streaming `delta`, under either field name."""
         return next(
             (delta[k] for k in ChatClient._REASONING_KEYS if delta.get(k)), None
