@@ -34,6 +34,8 @@ lint: check
 collect:
 	pytest --collect-only -q
 
-# Full suite (needs CSCS_SERVING_API / QMT_API_KEY set).
+# Full suite (needs CSCS_SERVING_API / QMT_API_KEY set). Network-bound, so
+# parallelized on 8 xdist workers; override with WORKERS=1 to run sequentially.
+WORKERS ?= 8
 test:
-	pytest
+	pytest -n $(WORKERS)

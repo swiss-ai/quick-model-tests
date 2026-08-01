@@ -21,7 +21,9 @@ import json
 import os
 from dataclasses import dataclass
 
-from .config import Config
+import pytest
+
+from .config import Config, _env
 
 PASS, FAIL, BROKEN, SKIP = "pass", "fail", "broken", "skip"
 _ICON = {PASS: "✔", FAIL: "✗", BROKEN: "⚠", SKIP: "–"}
@@ -70,10 +72,25 @@ def _skip_reason(report) -> str:
 
 
 class _Collector:
-    """pytest plugin: record one Result per test (insertion-ordered)."""
+    """pytest plugin: record one Result per test, in collection order.
+
+    Under pytest-xdist, reports arrive in completion order (workers race), so
+    display order is pinned to the collected test order instead: the controller
+    gets it from `pytest_xdist_node_collection_finished`, a sequential run from
+    `pytest_collection_modifyitems`.
+    """
 
     def __init__(self):
         self._by_name = {}
+        self._order = []
+
+    def pytest_collection_modifyitems(self, items):
+        self._order = [_check_name(item.nodeid) for item in items]
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_xdist_node_collection_finished(self, node, ids):
+        # Every worker collects the same ids in the same order.
+        self._order = [_check_name(nodeid) for nodeid in ids]
 
     def pytest_runtest_logreport(self, report):
         name = _check_name(report.nodeid)
@@ -99,7 +116,11 @@ class _Collector:
 
     @property
     def results(self):
-        return list(self._by_name.values())
+        results = list(self._by_name.values())
+        if self._order:
+            index = {name: i for i, name in enumerate(self._order)}
+            results.sort(key=lambda r: index.get(r.name, len(index)))
+        return results
 
 
 def run_checks(
@@ -126,10 +147,14 @@ def run_checks(
     if spec != "dev":
         marker = f"({marker}) and not dev"
     args += ["-m", marker]
+    # The checks are network-bound, so run them on parallel pytest-xdist
+    # workers. Capped at 8 by default (not CPU count): the bottleneck is the
+    # serving endpoint, and a login node can have 100+ cores.
+    workers = _env("QMT_WORKERS", default="8")
+    if workers not in ("0", "1"):
+        args += ["-n", workers]
     if junit:
         args += [f"--junitxml={junit}"]
-
-    import pytest  # required at runtime now (the default command runs the suites)
 
     collector = _Collector()
     sink = io.StringIO()

@@ -12,6 +12,7 @@ classifiers = ["License :: OSI Approved :: Apache Software License"]
 dependencies = [
     "requests",
     "pytest",
+    "pytest-xdist",
 ]
 
 [project.optional-dependencies]

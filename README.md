@@ -67,6 +67,7 @@ keep the tree clean with `make format` before pushing.
 | `QMT_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` |
 | `QMT_API_KEY` (or `CSCS_SERVING_API`) | — (required) |
 | `QMT_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` |
+| `QMT_WORKERS` | `8` (parallel test workers; `1` disables) |
 
 ## Suites
 

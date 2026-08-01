@@ -63,6 +63,7 @@ pytest                       # or: quick-model-tests --suite tools
 | `QMT_API_KEY` | falls back to `CSCS_SERVING_API` | Bearer token. |
 | `QMT_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` | Model id sent in requests. |
 | `QMT_TIMEOUT` | `120` | Per-request timeout (seconds). |
+| `QMT_WORKERS` | `8` | Parallel test workers (pytest-xdist). `1` disables; `auto` = CPU count. |
 
 ### `run.sh` responsibilities
 

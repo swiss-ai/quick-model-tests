@@ -16,7 +16,7 @@
 #
 # Flags: --suite a,b  --model ID  --spec openai|dev  --base-url URL  --junit PATH  --local
 # Config via env: QMT_API_BASE, QMT_API_KEY|CSCS_SERVING_API,
-#                 QMT_MODEL, QMT_TIMEOUT.
+#                 QMT_MODEL, QMT_TIMEOUT, QMT_WORKERS.
 # See SPEC.md section 3.
 set -euo pipefail
 

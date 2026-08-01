@@ -38,6 +38,12 @@ def main(argv=None) -> int:
         help="model id; repeat for a multi-model comparison table",
     )
     p.add_argument("--base-url")
+    p.add_argument(
+        "-j",
+        "--workers",
+        metavar="N",
+        help="parallel test workers (default: 8; 1 disables; 'auto' = CPU count)",
+    )
     p.add_argument("--junit", metavar="PATH", help="also write JUnit XML here")
     p.add_argument("--json", action="store_true", help="emit the result as JSON")
     p.add_argument(
@@ -68,6 +74,8 @@ def main(argv=None) -> int:
         os.environ["QMT_MODEL"] = models[0]
     if args.base_url:
         os.environ["QMT_API_BASE"] = args.base_url
+    if args.workers:
+        os.environ["QMT_WORKERS"] = args.workers
     if args.record_dir:
         if os.path.exists(args.record_dir):
             p.error(
