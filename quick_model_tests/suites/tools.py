@@ -199,6 +199,150 @@ def test_tools_stream(client, tools_supported):
     assert "city" in parsed, f"required key 'city' missing: {parsed!r}"
 
 
+def test_tools_finish(client, tools_supported):
+    """tools-finish: a natural non-streaming tool call ends with
+    finish_reason='tool_calls' (mirrors tools-stream-finish)."""
+    resp = client.chat(
+        [{"role": "user", "content": "Weather in Paris? Use the tool."}],
+        tools=[WEATHER_TOOL],
+        max_tokens=256,
+    )
+    assert _tool_calls(resp), "expected a tool call, got none"
+    finish = resp["choices"][0]["finish_reason"]
+    assert finish == "tool_calls", (
+        f"expected finish_reason='tool_calls', got {finish!r}"
+    )
+
+
+def test_tools_truncated(client, tools_supported):
+    """tools-truncated: a call cut off by max_tokens must degrade cleanly.
+
+    With a budget too small to finish the call the server cannot return a
+    complete tool_call -- but it must still return a well-formed response:
+    HTTP 200, finish_reason='length', and any tool_calls it does surface must
+    carry JSON-parseable arguments (a half-parsed call with truncated args is
+    worse than none). Partial tool markup in `content` is tolerated here; it
+    is unavoidable when the call itself was truncated.
+    """
+    resp = client.chat(
+        [{"role": "user", "content": "Weather in Paris? Use the tool."}],
+        tools=[WEATHER_TOOL],
+        max_tokens=6,  # too small for '<|tools_prefix|>[{"get_weather": ...'
+    )
+    finish = resp["choices"][0]["finish_reason"]
+    assert finish == "length", f"expected finish_reason='length', got {finish!r}"
+    for call in _tool_calls(resp):
+        json.loads(call["function"]["arguments"])  # must not be half-cut JSON
+
+
+def test_tools_stream_finish(client, tools_supported):
+    """tools-stream-finish: a streamed tool call ends with finish_reason='tool_calls'."""
+    finish = None
+    saw_delta = False
+    for chunk in client.stream(
+        [{"role": "user", "content": "Weather in Paris? Use the tool."}],
+        tools=[WEATHER_TOOL],
+        max_tokens=256,
+    ):
+        for choice in chunk.get("choices") or []:
+            if choice.get("delta", {}).get("tool_calls"):
+                saw_delta = True
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+    assert saw_delta, "no streamed tool_call deltas"
+    assert finish == "tool_calls", (
+        f"expected finish_reason='tool_calls', got {finish!r}"
+    )
+
+
+def test_tools_stream_no_content_leak(client, tools_supported):
+    """tools-stream-no-content-leak: raw tool markup must not stream as content.
+
+    The broken-parser signature: `<|tools_prefix|>[...]` arriving as content
+    deltas with no tool_call deltas. The call must stream on the tool_calls
+    channel and any content deltas must be free of tool/special-token markup.
+    """
+    content = ""
+    saw_call = False
+    for chunk in client.stream(
+        [{"role": "user", "content": "Weather in Paris? Use the tool."}],
+        tools=[WEATHER_TOOL],
+        max_tokens=256,
+    ):
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta", {})
+            content += delta.get("content") or ""
+            if delta.get("tool_calls"):
+                saw_call = True
+    assert saw_call, "no streamed tool_call deltas (call leaked as content?)"
+    leak = TOOL_MARKUP_RE.search(content)
+    assert not leak, (
+        f"tool markup leaked into streamed content: {leak.group(0)!r} "
+        f"in {content[:120]!r}"
+    )
+
+
+def test_tools_stream_delta_shape(client, tools_supported):
+    """tools-stream-delta-shape: OpenAI delta contract per call index.
+
+    Every tool_call delta carries an integer `index`; the first delta for an
+    index carries `id` and `function.name`; argument fragments for that index
+    only ever follow its name.
+    """
+    seen = {}  # index -> {"id": str|None, "name": str|None, "got_args": bool}
+    for chunk in client.stream(
+        [{"role": "user", "content": "Weather in Paris? Use the tool."}],
+        tools=[WEATHER_TOOL],
+        max_tokens=256,
+    ):
+        for choice in chunk.get("choices") or []:
+            for tc in choice.get("delta", {}).get("tool_calls") or []:
+                idx = tc.get("index")
+                assert isinstance(idx, int), f"tool_call delta without index: {tc!r}"
+                entry = seen.setdefault(idx, {"id": None, "name": None})
+                fn = tc.get("function", {})
+                if tc.get("id"):
+                    entry["id"] = entry["id"] or tc["id"]
+                if fn.get("name"):
+                    entry["name"] = fn["name"]
+                if fn.get("arguments"):
+                    assert entry["name"], (
+                        f"arguments streamed before name for index {idx}"
+                    )
+    assert seen, "no streamed tool_call deltas"
+    for idx, entry in seen.items():
+        assert entry["id"], f"call index {idx} never carried an id"
+        assert entry["name"], f"call index {idx} never carried a name"
+
+
+def test_tools_stream_equiv(client, tools_supported):
+    """tools-stream-equiv: streaming and non-streaming agree on the call.
+
+    Both transports run at temperature=0, so the tool name and the parsed
+    `arguments` object must be identical (mirrors stream-equiv for content).
+    """
+    prompt = [{"role": "user", "content": "Weather in Paris? Use the tool."}]
+    resp = client.chat(prompt, tools=[WEATHER_TOOL], max_tokens=256)
+    calls = _tool_calls(resp)
+    assert calls, "non-streaming produced no tool call to compare against"
+    ns_name = calls[0]["function"]["name"]
+    ns_args = json.loads(calls[0]["function"]["arguments"])
+
+    name, args = None, ""
+    for chunk in client.stream(prompt, tools=[WEATHER_TOOL], max_tokens=256):
+        for choice in chunk.get("choices") or []:
+            for tc in choice.get("delta", {}).get("tool_calls") or []:
+                fn = tc.get("function", {})
+                if fn.get("name"):
+                    name = fn["name"]
+                if fn.get("arguments"):
+                    args += fn["arguments"]
+    assert name == ns_name, f"stream={name!r} vs non-stream={ns_name!r}"
+    assert json.loads(args) == ns_args, (
+        f"stream args={args!r} vs non-stream args={ns_args!r} at temp=0"
+    )
+
+
 def test_tools_none(client, tools_supported):
     """tools-none: tools offered but prompt irrelevant -> plain content, no call."""
     resp = client.chat(
