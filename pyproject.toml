@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quick_model_tests"
+name = "mcs"
 version = "0.1.0"
-description = "Quick, deterministic capability + conformance tests for a served (OpenAI-compatible) model endpoint and the system around it"
+description = "Model Compatibility Suite: quick, deterministic capability + conformance tests for a served (OpenAI-compatible) model endpoint and the system around it"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 classifiers = ["License :: OSI Approved :: Apache Software License"]
@@ -20,19 +20,18 @@ dev = ["ruff"]
 serve = ["vllm"]
 
 [project.scripts]
-quick-model-tests = "quick_model_tests.cli:main"
-qmt = "quick_model_tests.cli:main"
+mcs = "mcs.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["quick_model_tests*"]
+include = ["mcs*"]
 
 [tool.setuptools.package-data]
 # Ship the multimodal fixture images/audio in the wheel (needed by the remote
 # pip-install flow, not just a source checkout).
-quick_model_tests = ["assets/*"]
+mcs = ["assets/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["quick_model_tests/suites"]
+testpaths = ["mcs/suites"]
 python_files = ["*.py"]
 markers = [
     "core: API contract basics",

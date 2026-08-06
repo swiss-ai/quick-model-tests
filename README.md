@@ -1,4 +1,4 @@
-# quick-model-tests
+# MCS — Model Compatibility Suite
 
 Lightweight tests that are 100% deterministic to prove the model (and system around it) will work in production. Designed to be prereq to evals and benchmarks.
 
@@ -6,13 +6,13 @@ Lightweight tests that are 100% deterministic to prove the model (and system aro
 
 ```bash
 export CSCS_SERVING_API=...   # your bearer token
-curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run.sh | bash
+curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash
 ```
 
 Scope to specific areas and pick a model:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run.sh | bash -s -- --model swiss-ai/Apertus-8B-Instruct-2509
+curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash -s -- --model swiss-ai/Apertus-8B-Instruct-2509
 ```
 
 The default run tests the **OpenAI API surface only** (`--spec openai`):
@@ -33,13 +33,13 @@ One command. It runs the deterministic suites against a model and prints a
 **✔/✗ capability table**, exiting non-zero on any failure.
 
 ```bash
-quick-model-tests                              # OpenAI-spec checks, default model
-quick-model-tests --model swiss-ai/Apertus-1.5-8B-Instruct-sft-dpo-tools
-quick-model-tests --capability tools           # just one capability
-quick-model-tests --spec dev                   # + checks needing /tokenize etc.
-quick-model-tests --model A --model B          # compare models (table)
-quick-model-tests --model A --model B --detail # + per-model failure reasons
-quick-model-tests --json                       # machine-readable
+mcs                              # OpenAI-spec checks, default model
+mcs --model swiss-ai/Apertus-1.5-8B-Instruct-sft-dpo-tools
+mcs --capability tools           # just one capability
+mcs --spec dev                   # + checks needing /tokenize etc.
+mcs --model A --model B          # compare models (table)
+mcs --model A --model B --detail # + per-model failure reasons
+mcs --json                       # machine-readable
 ```
 
 Status per check: `✔` pass · `✗` an assertion failed (a real gap) · `⚠` the
@@ -64,9 +64,9 @@ keep the tree clean with `make format` before pushing.
 
 | Env var | Default |
 |---------|---------|
-| `QMT_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` |
-| `QMT_API_KEY` (or `CSCS_SERVING_API`) | — (required) |
-| `QMT_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` |
+| `MCS_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` |
+| `MCS_API_KEY` (or `CSCS_SERVING_API`) | — (required) |
+| `MCS_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` |
 
 ## Suites
 

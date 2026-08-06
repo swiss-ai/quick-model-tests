@@ -1,7 +1,7 @@
 """Run the deterministic suites and render the result as a capability table.
 
 The pytest suites in `suites/` ARE the capability checks -- there is no separate
-set of probes. Running quick-model-tests executes them (against the configured
+set of probes. Running mcs executes them (against the configured
 model) and prints a per-check ✔/✗/⚠ table, exiting non-zero on any failure. It
 can be scoped to one capability (`--capability tools`) or compared across models
 (`--model A --model B`).
@@ -116,10 +116,10 @@ def run_checks(
     them. Explicitly requesting the capability (e.g. --capability
     special_tokens) does NOT override the spec filter -- pass --spec dev.
     """
-    os.environ["QMT_MODEL"] = config.model
-    os.environ["QMT_API_BASE"] = config.api_base
+    os.environ["MCS_MODEL"] = config.model
+    os.environ["MCS_API_BASE"] = config.api_base
     if config.api_key:
-        os.environ["QMT_API_KEY"] = config.api_key
+        os.environ["MCS_API_KEY"] = config.api_key
 
     args = [_SUITES_DIR, "-o", "python_files=*.py", "-p", "no:cacheprovider", "-q"]
     marker = f"({capability})" if capability else "not perf"

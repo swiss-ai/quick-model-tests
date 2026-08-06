@@ -1,4 +1,4 @@
-# quick-model-tests — Specification
+# MCS (Model Compatibility Suite) — Specification
 
 > Handoff spec. This document is authoritative: another engineer (human or
 > Claude) should be able to implement the full suite from this file alone.
@@ -24,7 +24,7 @@ These were decided up front. Do not re-litigate without a reason.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Repo | Standalone sibling repo `../quick-model-tests` | Separates runtime-behavior tests from tokenizer-definition artifacts. |
+| Repo | Standalone sibling repo `../mcs` | Separates runtime-behavior tests from tokenizer-definition artifacts. |
 | HTTP client | **`requests` only** (no `openai` SDK) | Tests the raw OpenAI-compatible wire format (SSE framing, `tool_calls` JSON) with no SDK abstraction hiding bugs. Keeps `curl \| bash` bootstrap light. |
 | Assertion depth | **Deterministic structural checks only — no LLM judge** | Every check must be 100% reproducible (status, schema, token counts, substring/regex/closed-set membership, SSE framing). Semantic quality ("is the answer good") is explicitly OUT OF SCOPE and belongs in LLM evals — mixing it in makes the gate flaky and its pass/fail meaningless. |
 | Bootstrap | **`run.sh` → temp venv → pip install from git → pytest** | Isolated, no system pollution, full pytest reporting, single `curl \| bash` entrypoint. |
@@ -35,8 +35,8 @@ These were decided up front. Do not re-litigate without a reason.
 Primary (remote, mirrors `validate_model.sh` in the tokenizer repo):
 
 ```bash
-export CSCS_SERVING_API=...   # bearer token (also accepted: QMT_API_KEY)
-curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run.sh | bash
+export CSCS_SERVING_API=...   # bearer token (also accepted: MCS_API_KEY)
+curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash
 ```
 
 Scoped run (args after `--` pass through to `run.sh`):
@@ -50,26 +50,26 @@ curl -fsSL .../run.sh | bash -s -- \
 Local checkout:
 
 ```bash
-git clone https://github.com/swiss-ai/quick-model-tests && cd quick-model-tests
+git clone https://github.com/swiss-ai/model-compatibility-suite && cd model-compatibility-suite
 pip install -e ".[dev]"
-pytest                       # or: quick-model-tests --suite tools
+pytest                       # or: mcs --suite tools
 ```
 
 ### Configuration (env vars)
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `QMT_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` | OpenAI-compatible base URL. |
-| `QMT_API_KEY` | falls back to `CSCS_SERVING_API` | Bearer token. |
-| `QMT_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` | Model id sent in requests. |
-| `QMT_TIMEOUT` | `120` | Per-request timeout (seconds). |
+| `MCS_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` | OpenAI-compatible base URL. |
+| `MCS_API_KEY` | falls back to `CSCS_SERVING_API` | Bearer token. |
+| `MCS_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` | Model id sent in requests. |
+| `MCS_TIMEOUT` | `120` | Per-request timeout (seconds). |
 
 ### `run.sh` responsibilities
 
 1. Resolve config from env + flags (`--suite`, `--model`,
    `--base-url`, `--junit <path>`, `--local` to skip the git install).
 2. Create a temp venv (`python3 -m venv`), `pip install` the package from the
-   git repo (`pip install "git+https://github.com/swiss-ai/quick-model-tests@main"`),
+   git repo (`pip install "git+https://github.com/swiss-ai/model-compatibility-suite@main"`),
    or `pip install -e .` when run inside a checkout.
 3. Map `--suite a,b` → `pytest -m "a or b"`; default runs all non-perf suites.
 4. Run pytest, print a `✔/✗` per-test summary and a final line, exit non-zero
@@ -79,20 +79,20 @@ pytest                       # or: quick-model-tests --suite tools
 ## 4. Repo layout
 
 ```
-quick-model-tests/
+mcs/
 ├── run.sh                      # curl|bash entrypoint (section 3)
 ├── SPEC.md                     # this file
 ├── README.md                   # quickstart, points to SPEC
-├── pyproject.toml              # package "quick_model_tests", deps: requests; dev: pytest
+├── pyproject.toml              # package "mcs", deps: requests; dev: pytest
 ├── conftest.py                 # fixtures: client, config
 ├── pytest.ini / [tool.pytest]  # markers: core, special_tokens, streaming, tools,
 │                               #          multimodal, multiturn, reasoning,
 │                               #          robustness, perf
-├── quick_model_tests/
+├── mcs/
 │   ├── __init__.py
 │   ├── config.py               # Config dataclass from env/flags
 │   ├── client.py               # ChatClient: chat(), stream(), raw POST helpers
-│   ├── cli.py                  # quick-model-tests entrypoint (flags -> env -> pytest)
+│   ├── cli.py                  # mcs entrypoint (flags -> env -> pytest)
 │   ├── assets/                 # tiny + large fixture image/audio files
 │   └── suites/
 │       ├── core.py
@@ -316,7 +316,7 @@ BOS.
 > skips. Checks are functional (modality read, well-formed, no token leak), NOT
 > "is the description good".
 >
-> Determinism: fixtures in `quick_model_tests/assets/` embed sentinels the model
+> Determinism: fixtures in `mcs/assets/` embed sentinels the model
 > can't guess — images render a numeric code (`4827` / `1593`), audio says a
 > fixed pangram — and the tests assert the sentinel/keyword appears in `content`.
 > A non-guessable numeric sentinel matters: a common word like `BANANA` can be
@@ -449,7 +449,7 @@ sections 7.5 / 7.7 with the real formats:
    (not dict) to str" — server chat-template bug). See §7.4; `tools-multiturn` is
    `xfail` and `tools-parallel` skips until these are fixed server-side.
 4. **Capability matrix per model.** ADDRESSED: capabilities and tests are one
-   thing. `quick-model-tests` runs the suites and renders a `✔/✗/⚠` table
+   thing. `mcs` runs the suites and renders a `✔/✗/⚠` table
    (`capabilities.py`), exiting non-zero on failure. Scope with `--capability
    TYPE`, compare with repeated `--model`, machine-read with `--json`. Status is
    derived from the pytest outcome: pass / fail (assertion) / broken (errored) /
@@ -516,8 +516,8 @@ curl -fsSL .../run.sh | bash -s -- --serve ./my-model --port 8000
 Design notes for the implementer:
 - `--serve <path>` makes `run.sh` start `vllm serve <path>` (or
   `python -m vllm.entrypoints.openai.api_server`) in the background, poll
-  `/health` until ready (timeout), set `QMT_API_BASE=http://localhost:PORT/v1`
-  and `QMT_API_KEY` to a dummy, run the suite, then tear vLLM down on exit
+  `/health` until ready (timeout), set `MCS_API_BASE=http://localhost:PORT/v1`
+  and `MCS_API_KEY` to a dummy, run the suite, then tear vLLM down on exit
   (trap). Surface vLLM logs on failure.
 - Because vLLM exposes the same OpenAI-compatible API, **the suites are
   unchanged** — only the bootstrap differs. This is purely a `run.sh` concern.

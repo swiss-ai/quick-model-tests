@@ -1,4 +1,4 @@
-"""`quick-model-tests` console entrypoint.
+"""`mcs` console entrypoint.
 
 Runs the deterministic suites against a served model and prints a capability
 table (✔/✗/⚠ per check), exiting non-zero on any failure. Scope to one
@@ -25,7 +25,7 @@ _CAPABILITIES = [
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    p = argparse.ArgumentParser(prog="quick-model-tests")
+    p = argparse.ArgumentParser(prog="mcs")
     p.add_argument(
         "--capability",
         "--suite",
@@ -65,16 +65,16 @@ def main(argv=None) -> int:
 
     models = args.model or []
     if len(models) == 1:
-        os.environ["QMT_MODEL"] = models[0]
+        os.environ["MCS_MODEL"] = models[0]
     if args.base_url:
-        os.environ["QMT_API_BASE"] = args.base_url
+        os.environ["MCS_API_BASE"] = args.base_url
     if args.record_dir:
         if os.path.exists(args.record_dir):
             p.error(
                 f"--record-responses directory already exists: {args.record_dir} "
                 f"(refusing to overwrite; choose a new path or remove it)"
             )
-        os.environ["QMT_RECORD_DIR"] = os.path.abspath(args.record_dir)
+        os.environ["MCS_RECORD_DIR"] = os.path.abspath(args.record_dir)
 
     cap = None
     if args.capability:
@@ -94,7 +94,7 @@ def main(argv=None) -> int:
 
     base = Config.from_env()
     if not base.api_key:
-        p.error("no API key (set CSCS_SERVING_API or QMT_API_KEY)")
+        p.error("no API key (set CSCS_SERVING_API or MCS_API_KEY)")
 
     if len(models) > 1:
         cfgs = [dataclasses.replace(base, model=m) for m in models]

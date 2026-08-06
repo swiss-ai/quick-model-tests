@@ -28,7 +28,7 @@ import re
 
 import pytest
 
-from quick_model_tests.client import ApiError, ChatClient
+from mcs.client import ApiError, ChatClient
 
 pytestmark = pytest.mark.tools
 

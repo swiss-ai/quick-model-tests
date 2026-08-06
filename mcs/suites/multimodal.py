@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from quick_model_tests.client import ApiError, ChatClient
-from quick_model_tests.suites.core import (
+from mcs.client import ApiError, ChatClient
+from mcs.suites.core import (
     _HARD_MAX_TOKENS,
     _HARD_PROMPT,
     _degeneration_reason,

@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from quick_model_tests.client import ChatClient
+from mcs.client import ChatClient
 
 pytestmark = pytest.mark.streaming
 

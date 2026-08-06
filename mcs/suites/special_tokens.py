@@ -73,15 +73,15 @@ import re
 
 import pytest
 
-from quick_model_tests.client import ApiError, ChatClient
-from quick_model_tests.suites.core import (
+from mcs.client import ApiError, ChatClient
+from mcs.suites.core import (
     _CONTROL_TOKEN_RE,
     _HARD_MAX_TOKENS,
     _HARD_PROMPT,
     _THINKING_MAX_TOKENS,
     _degeneration_reason,
 )
-from quick_model_tests.suites.multimodal import _audio, _image, _text
+from mcs.suites.multimodal import _audio, _image, _text
 
 pytestmark = pytest.mark.special_tokens
 

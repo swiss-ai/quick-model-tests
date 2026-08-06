@@ -16,7 +16,7 @@ install-dev: install
 
 # Run the capability checks (the ✔/✗ table).
 run:
-	quick-model-tests $(_MODEL) $(_CAP)
+	mcs $(_MODEL) $(_CAP)
 
 # Auto-fix lint + format the tree.
 format:
@@ -34,6 +34,6 @@ lint: check
 collect:
 	pytest --collect-only -q
 
-# Full suite (needs CSCS_SERVING_API / QMT_API_KEY set).
+# Full suite (needs CSCS_SERVING_API / MCS_API_KEY set).
 test:
 	pytest

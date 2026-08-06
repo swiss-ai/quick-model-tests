@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Bootstrap + run quick-model-tests against a hosted API.
+# Bootstrap + run mcs against a hosted API.
 #
 # Runs the deterministic suites and prints a ✔/✗ capability table (exit non-zero
 # on failure). Scope with --capability TYPE; compare models with repeated --model.
 #
 # Remote (the common case):
 #   export CSCS_SERVING_API=...   # bearer token
-#   curl -fsSL https://raw.githubusercontent.com/swiss-ai/quick-model-tests/main/run.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash
 #
 # Scoped:
 #   curl -fsSL .../run.sh | bash -s -- --suite tools,streaming --model <id>
@@ -15,13 +15,13 @@
 #   bash run.sh --local --suite core
 #
 # Flags: --suite a,b  --model ID  --spec openai|dev  --base-url URL  --junit PATH  --local
-# Config via env: QMT_API_BASE, QMT_API_KEY|CSCS_SERVING_API,
-#                 QMT_MODEL, QMT_TIMEOUT.
+# Config via env: MCS_API_BASE, MCS_API_KEY|CSCS_SERVING_API,
+#                 MCS_MODEL, MCS_TIMEOUT.
 # See SPEC.md section 3.
 set -euo pipefail
 
-REPO="${QMT_REPO:-https://github.com/swiss-ai/quick-model-tests}"
-REF="${QMT_REF:-main}"
+REPO="${MCS_REPO:-https://github.com/swiss-ai/model-compatibility-suite}"
+REF="${MCS_REF:-main}"
 LOCAL=0
 ARGS=()
 while [ "$#" -gt 0 ]; do
@@ -31,8 +31,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "${QMT_API_KEY:-}" ] && [ -z "${CSCS_SERVING_API:-}" ]; then
-  echo "error: set CSCS_SERVING_API (or QMT_API_KEY) to your bearer token" >&2
+if [ -z "${MCS_API_KEY:-}" ] && [ -z "${CSCS_SERVING_API:-}" ]; then
+  echo "error: set CSCS_SERVING_API (or MCS_API_KEY) to your bearer token" >&2
   exit 2
 fi
 
@@ -49,20 +49,20 @@ pip install --quiet --upgrade pip
 
 # Install from git by default. Only use the local tree with an explicit --local
 # (otherwise a stray ./pyproject.toml in the CWD -- e.g. another project -- would
-# get installed instead of quick-model-tests).
+# get installed instead of mcs).
 if [ "$LOCAL" -eq 1 ]; then
   pip install --quiet -e ".[dev]"
 else
-  pip install --quiet "quick_model_tests @ git+${REPO}@${REF}"
+  pip install --quiet "mcs @ git+${REPO}@${REF}"
 fi
 
-echo "Running quick-model-tests..."
+echo "Running mcs..."
 # Runs all capability checks by default. Pass --capability TYPE / --model
 # through ARGS to scope or compare.
 set +e
 # `${ARGS[@]+...}` guards against the macOS bash 3.2 "unbound variable" error
 # when ARGS is empty under `set -u`.
-quick-model-tests ${ARGS[@]+"${ARGS[@]}"}
+mcs ${ARGS[@]+"${ARGS[@]}"}
 status=$?
 set -e
 exit "$status"

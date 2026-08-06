@@ -29,9 +29,9 @@ class Config:
     def from_env(cls) -> "Config":
         return cls(
             api_base=_env(
-                "QMT_API_BASE", default="https://api.swissai.svc.cscs.ch/v1"
+                "MCS_API_BASE", default="https://api.swissai.svc.cscs.ch/v1"
             ).rstrip("/"),
-            api_key=_env("QMT_API_KEY", "CSCS_SERVING_API", default=""),
-            model=_env("QMT_MODEL", default="swiss-ai/Apertus-8B-Instruct-2509"),
-            timeout=float(_env("QMT_TIMEOUT", default="120")),
+            api_key=_env("MCS_API_KEY", "CSCS_SERVING_API", default=""),
+            model=_env("MCS_MODEL", default="swiss-ai/Apertus-8B-Instruct-2509"),
+            timeout=float(_env("MCS_TIMEOUT", default="120")),
         )

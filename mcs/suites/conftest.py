@@ -2,7 +2,7 @@
 
 Lives in the *suites* directory (next to the test modules) so pytest always
 loads it as the tests' conftest -- independent of where the rootdir lands. That
-matters for the installed `quick-model-tests` / curl|bash flow: a conftest one
+matters for the installed `mcs` / curl|bash flow: a conftest one
 level up (the package root) is NOT loaded when the rootdir is the suites dir,
 which surfaced as "fixture 'client' not found".
 
@@ -13,8 +13,8 @@ not in a functional gate.
 
 import pytest
 
-from quick_model_tests.client import ChatClient
-from quick_model_tests.config import Config
+from mcs.client import ChatClient
+from mcs.config import Config
 
 # Registered here (not only in pyproject) so markers resolve even when pytest is
 # launched against the installed package, where pyproject.toml is not on disk.
@@ -41,7 +41,7 @@ def pytest_configure(config):
 def config() -> Config:
     cfg = Config.from_env()
     if not cfg.api_key:
-        pytest.skip("no API key (set CSCS_SERVING_API or QMT_API_KEY)")
+        pytest.skip("no API key (set CSCS_SERVING_API or MCS_API_KEY)")
     return cfg
 
 
@@ -53,16 +53,16 @@ def client(config) -> ChatClient:
 @pytest.fixture(autouse=True)
 def _record_responses(request):
     """Record each test's request/response when --record-responses DIR is set
-    (plumbed via QMT_RECORD_DIR). Passive: it never alters what is sent or
+    (plumbed via MCS_RECORD_DIR). Passive: it never alters what is sent or
     asserted, so suite behaviour is identical with or without it."""
     import os
 
-    from quick_model_tests import recording
+    from mcs import recording
 
     recording.configure(
-        os.environ.get("QMT_RECORD_DIR"),
+        os.environ.get("MCS_RECORD_DIR"),
         request.node.name,
-        os.environ.get("QMT_MODEL", "model"),
+        os.environ.get("MCS_MODEL", "model"),
     )
     yield
     recording.reset()
