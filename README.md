@@ -1,4 +1,4 @@
-# quick-model-tests
+# model-compatibility-suite
 
 Lightweight tests that are 100% deterministic to prove the model (and system around it) will work in production. Designed to be prereq to evals and benchmarks.
 
