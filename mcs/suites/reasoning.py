@@ -30,8 +30,11 @@ Budgets are generous: a reasoning model may spend hundreds of tokens thinking
 before it emits the answer, so a tight max_tokens would truncate it.
 """
 
+from __future__ import annotations
+
 import json
 import re
+from typing import NamedTuple
 
 import pytest
 
@@ -279,6 +282,178 @@ def test_reason_tools(client, reasoning_supported):
         assert not leak, (
             f"tool/boundary scaffolding {leak.group(0)!r} leaked into {name}"
         )
+
+
+class _StreamedTurn(NamedTuple):
+    """What one streamed turn produced, per channel."""
+
+    reasoning: str
+    content: str
+    tool_name: str | None
+    tool_args: str
+    tool_deltas: int
+
+
+def _stream_turn(client, messages, **kw) -> _StreamedTurn:
+    """Drain a streamed turn, accumulating every channel it emits."""
+    reasoning, content, args = [], [], []
+    name, tool_deltas = None, 0
+    for ch in client.stream(messages, **kw):
+        # The terminal chunk carries usage with an empty `choices` list.
+        for choice in ch.get("choices") or []:
+            delta = choice.get("delta", {})
+            rc = ChatClient.reasoning_delta(delta)
+            if rc:
+                reasoning.append(rc)
+            if delta.get("content"):
+                content.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                tool_deltas += 1
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    name = fn["name"]
+                if fn.get("arguments"):
+                    args.append(fn["arguments"])
+    return _StreamedTurn(
+        "".join(reasoning), "".join(content), name, "".join(args), tool_deltas
+    )
+
+
+def _assert_streamed_weather_call(turn: _StreamedTurn, context: str) -> None:
+    """The streamed turn produced a clean get_weather call, not raw markup.
+
+    The two assertions are deliberately paired: whether the raw tool block shows
+    up verbatim in `content` depends on `skip_special_tokens`, but a stream that
+    never leaves the reasoning phase always fails the FIRST one -- no tool_call
+    deltas at all -- however the server decodes the delimiters.
+    """
+    assert turn.tool_deltas, (
+        f"{context}: no streamed tool_call deltas -- the tool parser never ran, so "
+        f"an agent would execute nothing. content={turn.content[:200]!r}"
+    )
+    assert turn.tool_name == "get_weather", (
+        f"{context}: unexpected streamed tool {turn.tool_name!r}"
+    )
+    try:
+        json.loads(turn.tool_args)
+    except json.JSONDecodeError as exc:
+        pytest.fail(f"{context}: streamed arguments are not valid JSON ({exc})")
+    for label, chan in (
+        ("content", turn.content),
+        ("reasoning_content", turn.reasoning),
+    ):
+        leak = THINK_TOKEN_RE.search(chan)
+        assert not leak, (
+            f"{context}: raw scaffolding {leak.group(0)!r} leaked into streamed "
+            f"{label}: {chan[:200]!r}"
+        )
+
+
+def test_reason_tools_stream(client, reasoning_supported):
+    """reason-tools-stream: reasoning- and tool-parser cooperate WHILE STREAMING.
+
+    The streaming counterpart of reason-tools, and a different code path: the
+    server decides per-delta when the deliberation ends and the tool parser takes
+    over. Get that handoff wrong and the call never reaches `tool_calls` -- the
+    raw `<|tools_prefix|>[...]` block streams to the user as `content` instead,
+    so an MCP/agent client renders JSON and executes nothing.
+
+    Skipped when the endpoint does not support tool calling (that gap is the
+    `tools` suite's to report, not this one's).
+    """
+    try:
+        turn = _stream_turn(
+            client,
+            [{"role": "user", "content": "Get the weather in Zurich. Use the tool."}],
+            tools=[WEATHER_TOOL],
+            max_tokens=REASON_MAX_TOKENS,
+        )
+    except ApiError as exc:
+        pytest.skip(f"tool calling not supported by endpoint: {exc}")
+    _assert_streamed_weather_call(turn, "streamed tool call")
+
+
+def test_reason_tools_stream_nothink(client):
+    """reason-tools-stream-nothink: a streamed tool call with NO deliberation block.
+
+    The failure mode this targets: a reasoning parser splits on an end delimiter,
+    so when the model skips the deliberation entirely and commits straight to a
+    tool call, that delimiter never arrives and the stream never leaves the
+    reasoning phase. Non-streaming is unaffected (the parser sees the whole
+    output at once), which is why reason-tools can pass while this fails.
+
+    Forces `enable_thinking=false` to make the no-inner-block path deterministic
+    rather than hoping the model skips deliberating on its own, and
+    `skip_special_tokens=false` so leaked delimiters are visible instead of
+    silently stripped. Deliberately NOT gated on `reasoning_supported`: that probe
+    skips exactly the non-think endpoints where this bites hardest. On an endpoint
+    with no reasoning parser at all it degenerates to a plain streamed tool-call
+    check, which is still a valid assertion.
+    """
+    try:
+        turn = _stream_turn(
+            client,
+            [{"role": "user", "content": "Get the weather in Zurich. Use the tool."}],
+            tools=[WEATHER_TOOL],
+            max_tokens=REASON_MAX_TOKENS,
+            extra={
+                "chat_template_kwargs": {"enable_thinking": False},
+                "skip_special_tokens": False,
+            },
+        )
+    except ApiError as exc:
+        pytest.skip(
+            "endpoint rejected tool calling or the enable_thinking / "
+            f"skip_special_tokens overrides: {exc}"
+        )
+    _assert_streamed_weather_call(turn, "streamed tool call with thinking disabled")
+
+
+def test_reason_tools_stream_resumed(client, reasoning_supported):
+    """reason-tools-stream-resumed: a streamed SECOND call after a round-trip.
+
+    Apertus 1.5 holds the deliberation block open ACROSS tool calls, so a turn
+    resumed after a tool result can start mid-deliberation -- a different initial
+    parser state from the fresh turn reason-tools-stream covers. Getting it wrong
+    ends the reasoning phase immediately and hands the still-running deliberation
+    to the tool parser, which leaks `<|inner_suffix|>` into user-visible content.
+
+    Replays a completed round-trip (assistant `tool_calls` -> `tool` result ->
+    answer), then streams a new user turn that needs a fresh call. Skipped when
+    the endpoint rejects the replayed history -- that round-trip gap belongs to
+    the `tools` suite.
+    """
+    messages = [
+        {"role": "user", "content": "What's the weather in Zurich? Use the tool."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Zurich"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "14C light rain"},
+        {"role": "assistant", "content": "Zurich is 14C with light rain."},
+        {"role": "user", "content": "Now check London. Use the tool."},
+    ]
+    try:
+        turn = _stream_turn(
+            client, messages, tools=[WEATHER_TOOL], max_tokens=REASON_MAX_TOKENS
+        )
+    except ApiError as exc:
+        pytest.skip(f"endpoint rejected tool calling or the replayed round-trip: {exc}")
+    _assert_streamed_weather_call(turn, "streamed follow-up call")
+    args = json.loads(turn.tool_args)
+    assert "london" in str(args.get("city", "")).lower(), (
+        f"follow-up call did not target London: {args!r}"
+    )
 
 
 # An agentic system prompt plus an offered tool is the shape that provoked the
