@@ -118,6 +118,7 @@ def run_checks(
     """
     os.environ["MCS_MODEL"] = config.model
     os.environ["MCS_API_BASE"] = config.api_base
+    os.environ["MCS_RATE_LIMIT"] = str(config.rate_limit)
     if config.api_key:
         os.environ["MCS_API_KEY"] = config.api_key
 

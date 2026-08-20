@@ -7,14 +7,14 @@ Loosely based on Android's [Compatibility Test Suite (CTS)](https://source.andro
 ## Quickstart
 
 ```bash
-export CSCS_SERVING_API=...   # your bearer token
+export SWISSAI_RESEARCH_API_KEY=...   # your bearer token
 curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash
 ```
 
 Scope to specific areas and pick a model:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash -s -- --model swiss-ai/Apertus-8B-Instruct-2509
+curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash -s -- --model CSCS-Inference/swiss-ai/Apertus-8B-Instruct-2509
 ```
 
 The default run tests the **OpenAI API surface only** (`--spec openai`):
@@ -137,8 +137,8 @@ The `reason_*` skips are expected — these are the non-thinking builds. The
 | Env var | Default |
 |---------|---------|
 | `MCS_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` |
-| `MCS_API_KEY` (or `CSCS_SERVING_API`) | — (required) |
-| `MCS_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` |
+| `MCS_API_KEY` (or `SWISSAI_RESEARCH_API_KEY`) | — (required) |
+| `MCS_MODEL` | `CSCS-Inference/swiss-ai/Apertus-8B-Instruct-2509` |
 
 ## Suites
 

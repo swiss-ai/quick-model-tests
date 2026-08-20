@@ -35,7 +35,7 @@ These were decided up front. Do not re-litigate without a reason.
 Primary (remote, mirrors `validate_model.sh` in the tokenizer repo):
 
 ```bash
-export CSCS_SERVING_API=...   # bearer token (also accepted: MCS_API_KEY)
+export SWISSAI_RESEARCH_API_KEY=...   # bearer token (also accepted: MCS_API_KEY)
 curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash
 ```
 
@@ -44,7 +44,7 @@ Scoped run (args after `--` pass through to `run.sh`):
 ```bash
 curl -fsSL .../run.sh | bash -s -- \
   --suite tools,streaming \
-  --model swiss-ai/Apertus-8B-Instruct-2509
+  --model CSCS-Inference/swiss-ai/Apertus-8B-Instruct-2509
 ```
 
 Local checkout:
@@ -60,9 +60,10 @@ pytest                       # or: mcs --suite tools
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `MCS_API_BASE` | `https://api.swissai.svc.cscs.ch/v1` | OpenAI-compatible base URL. |
-| `MCS_API_KEY` | falls back to `CSCS_SERVING_API` | Bearer token. |
-| `MCS_MODEL` | `swiss-ai/Apertus-8B-Instruct-2509` | Model id sent in requests. |
+| `MCS_API_KEY` | falls back to `SWISSAI_RESEARCH_API_KEY` | Bearer token. `CSCS_SERVING_API` still works but is deprecated (prints a warning). |
+| `MCS_MODEL` | `CSCS-Inference/swiss-ai/Apertus-8B-Instruct-2509` | Model id sent in requests. |
 | `MCS_TIMEOUT` | `120` | Per-request timeout (seconds). |
+| `MCS_RATE_LIMIT` | `0` (unrestricted) | Max requests per **minute** sent to the endpoint (e.g. `10` for endpoints capped at 15 req/min per user). CLI: `--rate-limit N`. |
 
 ### `run.sh` responsibilities
 

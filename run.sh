@@ -5,7 +5,7 @@
 # on failure). Scope with --capability TYPE; compare models with repeated --model.
 #
 # Remote (the common case):
-#   export CSCS_SERVING_API=...   # bearer token
+#   export SWISSAI_RESEARCH_API_KEY=...   # bearer token
 #   curl -fsSL https://raw.githubusercontent.com/swiss-ai/model-compatibility-suite/main/run.sh | bash
 #
 # Scoped:
@@ -14,9 +14,10 @@
 # Inside a checkout (skip the git install, use the local tree):
 #   bash run.sh --local --suite core
 #
-# Flags: --suite a,b  --model ID  --spec openai|dev  --base-url URL  --junit PATH  --local
-# Config via env: MCS_API_BASE, MCS_API_KEY|CSCS_SERVING_API,
-#                 MCS_MODEL, MCS_TIMEOUT.
+# Flags: --suite a,b  --model ID  --spec openai|dev  --base-url URL  --junit PATH
+#        --rate-limit N  --local
+# Config via env: MCS_API_BASE, MCS_API_KEY|SWISSAI_RESEARCH_API_KEY,
+#                 MCS_MODEL, MCS_TIMEOUT, MCS_RATE_LIMIT.
 # See SPEC.md section 3.
 set -euo pipefail
 
@@ -31,8 +32,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "${MCS_API_KEY:-}" ] && [ -z "${CSCS_SERVING_API:-}" ]; then
-  echo "error: set CSCS_SERVING_API (or MCS_API_KEY) to your bearer token" >&2
+if [ -z "${MCS_API_KEY:-}" ] && [ -z "${SWISSAI_RESEARCH_API_KEY:-}" ] \
+  && [ -z "${CSCS_SERVING_API:-}" ]; then
+  echo "error: set SWISSAI_RESEARCH_API_KEY (or MCS_API_KEY) to your bearer token" >&2
   exit 2
 fi
 

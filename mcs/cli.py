@@ -38,6 +38,14 @@ def main(argv=None) -> int:
         help="model id; repeat for a multi-model comparison table",
     )
     p.add_argument("--base-url")
+    p.add_argument(
+        "--rate-limit",
+        dest="rate_limit",
+        type=float,
+        metavar="N",
+        help="max requests per minute sent to the endpoint, e.g. 10 "
+        "(default: unrestricted)",
+    )
     p.add_argument("--junit", metavar="PATH", help="also write JUnit XML here")
     p.add_argument("--json", action="store_true", help="emit the result as JSON")
     p.add_argument(
@@ -68,6 +76,8 @@ def main(argv=None) -> int:
         os.environ["MCS_MODEL"] = models[0]
     if args.base_url:
         os.environ["MCS_API_BASE"] = args.base_url
+    if args.rate_limit is not None:
+        os.environ["MCS_RATE_LIMIT"] = str(args.rate_limit)
     if args.record_dir:
         if os.path.exists(args.record_dir):
             p.error(
@@ -94,7 +104,7 @@ def main(argv=None) -> int:
 
     base = Config.from_env()
     if not base.api_key:
-        p.error("no API key (set CSCS_SERVING_API or MCS_API_KEY)")
+        p.error("no API key (set SWISSAI_RESEARCH_API_KEY or MCS_API_KEY)")
 
     if len(models) > 1:
         cfgs = [dataclasses.replace(base, model=m) for m in models]
