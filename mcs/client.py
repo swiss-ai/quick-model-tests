@@ -8,12 +8,30 @@ test. See SPEC.md section 5.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 
 import requests
 
 from . import recording
 from .config import Config
+
+# Module-level so the pace holds across ChatClient instances (e.g. successive
+# per-model runs in a comparison), which all count against the same user quota.
+_last_request_at = 0.0
+
+
+def _throttle(rate_limit: float) -> None:
+    """Sleep just long enough to keep outgoing requests under ``rate_limit``
+    requests per MINUTE (the unit serving gateways express their caps in,
+    e.g. 15 req/min). <= 0 disables throttling."""
+    global _last_request_at
+    if rate_limit <= 0:
+        return
+    wait = _last_request_at + 60.0 / rate_limit - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at = time.monotonic()
 
 
 def _record_iter_lines(resp: requests.Response) -> None:
@@ -97,6 +115,7 @@ class ChatClient:
         /completions -- shows up under ``--record-responses``, not just
         /chat/completions."""
         recording.record("input", json.dumps(body, indent=2, ensure_ascii=False))
+        _throttle(self.config.rate_limit)
         resp = requests.post(
             f"{self.config.api_base}{path}",
             headers=self._headers(),

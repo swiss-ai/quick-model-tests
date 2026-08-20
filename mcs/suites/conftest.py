@@ -41,7 +41,7 @@ def pytest_configure(config):
 def config() -> Config:
     cfg = Config.from_env()
     if not cfg.api_key:
-        pytest.skip("no API key (set CSCS_SERVING_API or MCS_API_KEY)")
+        pytest.skip("no API key (set SWISSAI_RESEARCH_API_KEY or MCS_API_KEY)")
     return cfg
 
 
